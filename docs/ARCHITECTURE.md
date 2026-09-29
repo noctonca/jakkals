@@ -1,9 +1,8 @@
 # Architecture
 
 Status: **draft**. The fixed decisions below are settled, and so are
-the profile fields Jakkals reads today, the local tools and the design
-of MCP servers, which is not built yet. The event shapes are a first
-proposal, to be settled by the code that writes them.
+the profile fields, the local tools and MCP servers. The event shapes
+are a first proposal, to be settled by the code that writes them.
 
 ## What Jakkals is
 
@@ -79,11 +78,8 @@ must be positive. Every other field has a documented default.
 
 A field the profile doesn't know is refused, not ignored, so a
 misspelt limit is an error rather than a run without it; only
-`provider.params` is open. A field for a capability not built yet (the
-`mcp` table) is refused, and so is a shell setting when `shell` isn't
-offered, so a profile never claims what a run won't do; the `mcp` rows
-below are the settled design, read once the change that builds it
-lands.
+`provider.params` is open. A shell setting when `shell` isn't offered
+is refused too, so a profile never claims what a run won't do.
 
 | Field | What it sets | Default |
 |---|---|---|
@@ -102,7 +98,7 @@ lands.
 | `tools.sandbox` | How shell commands are confined: `seatbelt` (macOS), `landlock` (Linux) or `none`, which must be written out. | the system's own: `seatbelt` on macOS, `landlock` on Linux |
 | `tools.sandbox_read` | Absolute paths the sandbox also lets commands read, for programs and their libraries installed outside the system's own paths (a package manager's prefix). | none |
 | `tools.shell_timeout_s` | Seconds a shell command may run before it is killed. | 30 |
-| `mcp.<name>.url` | Not built. An MCP server's streamable HTTP endpoint. `<name>` is 1 to 16 of `a-z`, `0-9` and `-`, and prefixes its tools' names. See [MCP servers](#mcp-servers). | required |
+| `mcp.<name>.url` | An MCP server's streamable HTTP endpoint. `<name>` is 1 to 16 of `a-z`, `0-9` and `-`, and prefixes its tools' names. See [MCP servers](#mcp-servers). | required |
 | `mcp.<name>.tools` | The server's tools offered, by the server's names, in the order written; a name twice is refused. | required |
 | `mcp.<name>.key_env` | The environment variable holding the server's key. Unset sends no key; set but empty in the environment stops the run before it starts. | unset |
 | `mcp.<name>.key_header` | The header the key goes in. `authorization` sends it as a bearer token; any other name sends it as it is. Only with `key_env`. | `authorization` |
@@ -312,8 +308,9 @@ by default, because it takes power away rather than adding it. A run's
 
 ## MCP servers
 
-Not built yet; this is the design. Each `mcp.<name>` table names one
-server, reached over MCP's streamable HTTP transport through `rmcp`.
+[`src/tools/mcp.rs`](../src/tools/mcp.rs). Each `mcp.<name>` table
+names one server, reached over MCP's streamable HTTP transport through
+`rmcp`.
 A server run as a local process (MCP's stdio transport) is not
 offered: it would run outside the shell's sandbox, with the user's
 whole environment.
@@ -328,9 +325,10 @@ key_header = "x-api-key"
 
 The model sees each tool as `<name>_<tool>`, `notes_search` above,
 so an MCP tool never shares a name with a local one, whose names hold
-no `_`. A name the provider can't take (past 64 characters, or holding
-anything but letters, digits, `_` and `-`) is refused in the profile,
-and so is one two servers would share. Local tools are offered first,
+no `_`, nor with another server's, since a server's name holds no `_`
+either. A name the provider can't take (past 64 characters, or holding
+anything but letters, digits, `_` and `-`) is refused in the profile.
+Local tools are offered first,
 then each server's in the order its `tools` lists them, servers
 ordered by name. A `key_header` naming a header the transport sets
 itself (`accept`, `content-type`, `mcp-session-id`,
@@ -350,7 +348,8 @@ lacks a tool the profile lists stops the run before it starts (exit
 2), naming the server and the cause. Jakkals declares no client
 capabilities, so a server can't ask it for anything (a model call,
 the user's input, a list of roots); a request it sends anyway gets
-MCP's method-not-found error. The tool list is read once: a server
+MCP's method-not-found error, where `rmcp` on its own would answer a
+roots request with an empty list and decline a request for input. The tool list is read once: a server
 announcing a changed list is not re-read. The server's own
 notifications, its log lines among them, are dropped.
 
@@ -361,17 +360,19 @@ but with structured content returns that content as JSON; any other
 part (an image, audio, a resource) is not passed on, and a
 `[jakkals: <kind> left out]` line stands in its place. A result the
 server marks `isError` is a `failed` tool call, and so are an MCP
-error reply (carrying its code and message), a lost connection and a
-call still running when `call_timeout_s` or the run's deadline
-passes, whichever comes first; a call that runs out of time is
-cancelled with MCP's cancellation notice. Each goes back to the model,
-and the run goes on.
+error reply (carrying its code and message), a lost connection, a
+reply asking for the user's input or turning the call into a task to
+poll, and a call still running when `call_timeout_s` or the run's
+deadline passes, whichever comes first; a call that runs out of time
+is cancelled with MCP's cancellation notice. Each goes back to the
+model, and the run goes on.
 
 **Nothing on the side.** No retries, no reconnecting, no redirects,
-and no new session when the server says the old one expired: `rmcp`'s
-client does each of these by default, and Jakkals turns every one off.
-A server whose connection is lost stays lost for the rest of the run,
-and each later call to its tools fails with the same cause.
+no new session when the server says the old one expired, no cached
+tool list, and no call sent twice: `rmcp`'s client does each of these
+by default or in its convenience calls, so Jakkals turns them off and
+sends `tools/list` and `tools/call` as plain requests. A lost
+connection is not opened again.
 
 Fixed by the Jakkals version, as the local tools' bounds are:
 
@@ -380,6 +381,7 @@ Fixed by the Jakkals version, as the local tools' bounds are:
 | Setting up one server | 10 s | The run doesn't start. |
 | Pages of one server's tool list | 16 | The run doesn't start. |
 | One streamed message (a server-sent event) | 1 MiB | The call fails. |
+| Sending the cancellation of a call past its time | 2 s | Given up on; the call has failed already, and its time includes this. |
 
 One gap: a server that answers a call with a plain JSON body rather
 than a stream has that body read whole, since `rmcp` reads it so.
@@ -448,7 +450,7 @@ Every dependency has a row here before it enters `Cargo.toml`.
 | `reqwest` (rustls) | HTTP to the provider, and under `rmcp` to MCP servers. | yes |
 | `serde`, `serde_json` (`raw_value`) | Wire types, events; `raw_value` keeps a reported cost as the digits the server wrote. | yes |
 | `toml` | The profile. | yes |
-| `rmcp` (`client`, `transport-streamable-http-client-reqwest`; no default features) | MCP client over streamable HTTP, on our own `reqwest` client. Default features left out: they are the server side. | not yet |
+| `rmcp` (`client`, `transport-streamable-http-client-reqwest`; no default features) | MCP client over streamable HTTP, on our own `reqwest` client. Default features left out: they are the server side. | yes |
 | `ignore` | The `list` and `search` tools' walk, with ripgrep's ignore rules. | yes |
 | `grep-searcher`, `grep-regex` | The `search` tool: ripgrep's line searcher (binary detection, bounded line buffer) and its regex matcher. | yes |
 | `sha2` | The profile hash. | yes |

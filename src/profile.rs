@@ -2,6 +2,7 @@
 //! hashed before a run starts; a run records the hash. See the profile
 //! table in docs/ARCHITECTURE.md for every field and its default.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::io::Read;
 use std::path::Path;
@@ -15,6 +16,10 @@ use crate::money;
 use crate::provider::http::{self, HttpConfig, OPENROUTER_BASE_URL};
 use crate::run::Limits;
 use crate::tools::local::LocalTool;
+use crate::tools::mcp::{
+    CALL_TIMEOUT_S_DEFAULT, KeySettings, McpSettings, RESERVED_HEADERS, SERVER_NAME_CAP_BYTES,
+    TOOL_NAME_CAP_BYTES,
+};
 use crate::tools::shell::{self, SHELL_TIMEOUT_S_DEFAULT, Sandbox, ShellSettings, WordsError};
 
 /// The largest profile read. A profile is a page of TOML and a system
@@ -36,6 +41,8 @@ pub struct Profile {
     pub local_tools: Vec<LocalTool>,
     /// The shell's settings, exactly when `shell` is offered.
     pub shell: Option<ShellSettings>,
+    /// The MCP servers, ordered by name.
+    pub mcp: Vec<McpSettings>,
     /// `sha256:` and the hex digest of the file's bytes, so a run can be
     /// matched to its profile with standard tools.
     pub hash: String,
@@ -62,11 +69,16 @@ pub enum ProfileError {
         field: &'static str,
         problem: &'static str,
     },
-    /// A field for a capability that isn't built yet. Refused rather
-    /// than ignored, so a profile never claims what a run won't do.
-    NotBuilt { field: &'static str },
-    /// `provider.api_key_env` names a variable that is unset or empty.
-    KeyUnset { variable: String },
+    /// An MCP server's table has a value the harness can't run with:
+    /// the server's name itself when `field` is `None`.
+    InvalidServer {
+        server: String,
+        field: Option<&'static str>,
+        problem: &'static str,
+    },
+    /// A key's variable (`provider.api_key_env`, `mcp.<name>.key_env`)
+    /// is unset or empty.
+    KeyUnset { field: String, variable: String },
 }
 
 impl fmt::Display for ProfileError {
@@ -75,13 +87,19 @@ impl fmt::Display for ProfileError {
             Self::Read { detail } => write!(formatter, "can't read the profile: {detail}"),
             Self::Toml { detail } => write!(formatter, "the profile isn't valid: {detail}"),
             Self::Invalid { field, problem } => write!(formatter, "profile `{field}` {problem}"),
-            Self::NotBuilt { field } => write!(
+            Self::InvalidServer {
+                server,
+                field: None,
+                problem,
+            } => write!(formatter, "profile `mcp.{server}` {problem}"),
+            Self::InvalidServer {
+                server,
+                field: Some(field),
+                problem,
+            } => write!(formatter, "profile `mcp.{server}.{field}` {problem}"),
+            Self::KeyUnset { field, variable } => write!(
                 formatter,
-                "profile `{field}` is for a capability not built yet; remove it"
-            ),
-            Self::KeyUnset { variable } => write!(
-                formatter,
-                "provider.api_key_env names `{variable}`, which is unset or empty"
+                "{field} names `{variable}`, which is unset or empty"
             ),
         }
     }
@@ -114,19 +132,18 @@ impl Profile {
         let file: File = toml::from_str(text).map_err(|error| ProfileError::Toml {
             detail: error.to_string(),
         })?;
-        if file.mcp.is_some() {
-            return Err(ProfileError::NotBuilt { field: "mcp" });
-        }
         let limits = limits(&file.limits, text)?;
         let provider = provider(file.provider)?;
         let local_tools = local_tools(&file.tools.local)?;
         let shell = shell_settings(file.tools, local_tools.contains(&LocalTool::Shell))?;
+        let mcp = mcp_servers(file.mcp)?;
         Ok(Self {
             system_prompt: file.system_prompt,
             limits,
             provider,
             local_tools,
             shell,
+            mcp,
             hash: hash(text.as_bytes()),
         })
     }
@@ -139,13 +156,7 @@ impl Profile {
     ) -> Result<HttpConfig, ProfileError> {
         let api_key = match &self.provider.api_key_env {
             None => None,
-            Some(variable) => {
-                Some(env(variable).filter(|key| !key.is_empty()).ok_or_else(|| {
-                    ProfileError::KeyUnset {
-                        variable: variable.clone(),
-                    }
-                })?)
-            }
+            Some(variable) => Some(read_key("provider.api_key_env", variable, &env)?),
         };
         Ok(HttpConfig {
             base_url: self.provider.base_url.clone(),
@@ -153,6 +164,32 @@ impl Profile {
             params: self.provider.params.clone(),
         })
     }
+}
+
+/// An MCP server's key, read through `env` (the process environment,
+/// in a run); `None` when the profile names no key for it.
+pub fn mcp_key(
+    server: &McpSettings,
+    env: impl Fn(&str) -> Option<String>,
+) -> Result<Option<String>, ProfileError> {
+    server
+        .key
+        .as_ref()
+        .map(|key| read_key(&format!("mcp.{}.key_env", server.name), &key.env, &env))
+        .transpose()
+}
+
+fn read_key(
+    field: &str,
+    variable: &str,
+    env: &impl Fn(&str) -> Option<String>,
+) -> Result<String, ProfileError> {
+    env(variable)
+        .filter(|key| !key.is_empty())
+        .ok_or_else(|| ProfileError::KeyUnset {
+            field: field.to_owned(),
+            variable: variable.to_owned(),
+        })
 }
 
 fn limits(file: &FileLimits, text: &str) -> Result<Limits, ProfileError> {
@@ -343,6 +380,93 @@ fn shell_settings(file: FileTools, offered: bool) -> Result<Option<ShellSettings
     }))
 }
 
+fn mcp_servers(file: BTreeMap<String, FileMcp>) -> Result<Vec<McpSettings>, ProfileError> {
+    let mut servers = Vec::with_capacity(file.len());
+    // A BTreeMap: the servers come ordered by name.
+    for (name, server) in file {
+        let invalid = |field, problem| ProfileError::InvalidServer {
+            server: name.clone(),
+            field,
+            problem,
+        };
+        if name.is_empty()
+            || name.len() > SERVER_NAME_CAP_BYTES
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        {
+            return Err(invalid(
+                None,
+                "needs a name of 1 to 16 characters from a-z, 0-9 and -",
+            ));
+        }
+        let scheme_ok = reqwest::Url::parse(&server.url)
+            .is_ok_and(|url| matches!(url.scheme(), "http" | "https"));
+        if !scheme_ok {
+            return Err(invalid(Some("url"), "must be an http or https URL"));
+        }
+        if server.tools.is_empty() {
+            return Err(invalid(Some("tools"), "must name at least one tool"));
+        }
+        for (index, tool) in server.tools.iter().enumerate() {
+            if server.tools[..index].contains(tool) {
+                return Err(invalid(Some("tools"), "names a tool twice"));
+            }
+            let offered = McpSettings::offered_name(&name, tool);
+            if offered.len() > TOOL_NAME_CAP_BYTES
+                || !offered
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+            {
+                return Err(invalid(
+                    Some("tools"),
+                    "names a tool whose offered name `<server>_<tool>` a provider can't take: \
+                     over 64 characters, or holding other than letters, digits, _ and -",
+                ));
+            }
+        }
+        let key = match (server.key_env, server.key_header) {
+            (None, Some(_)) => {
+                return Err(invalid(Some("key_header"), "is set, but key_env isn't"));
+            }
+            (None, None) => None,
+            (Some(env), _) if env.is_empty() => {
+                return Err(invalid(
+                    Some("key_env"),
+                    "must name a variable; leave it out to send no key",
+                ));
+            }
+            (Some(env), header) => {
+                let header = header
+                    .unwrap_or_else(|| "authorization".to_owned())
+                    .to_ascii_lowercase();
+                if reqwest::header::HeaderName::from_bytes(header.as_bytes()).is_err() {
+                    return Err(invalid(Some("key_header"), "must be an HTTP header name"));
+                }
+                if RESERVED_HEADERS.contains(&header.as_str()) {
+                    return Err(invalid(
+                        Some("key_header"),
+                        "names a header the transport sets itself",
+                    ));
+                }
+                Some(KeySettings { env, header })
+            }
+        };
+        let call_timeout_s = server.call_timeout_s.unwrap_or(CALL_TIMEOUT_S_DEFAULT);
+        if call_timeout_s == 0 {
+            return Err(invalid(Some("call_timeout_s"), "must be positive"));
+        }
+        servers.push(McpSettings {
+            name,
+            url: server.url,
+            tools: server.tools,
+            key,
+            call_timeout_s,
+        });
+    }
+    Ok(servers)
+}
+
 fn hash(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     let mut hash = String::from("sha256:");
@@ -365,7 +489,18 @@ struct File {
     provider: FileProvider,
     #[serde(default)]
     tools: FileTools,
-    mcp: Option<toml::Value>,
+    #[serde(default)]
+    mcp: BTreeMap<String, FileMcp>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileMcp {
+    url: String,
+    tools: Vec<String>,
+    key_env: Option<String>,
+    key_header: Option<String>,
+    call_timeout_s: Option<u32>,
 }
 
 #[derive(Default, Deserialize)]

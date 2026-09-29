@@ -8,16 +8,19 @@ use clap::{Parser, Subcommand};
 
 use jakkals::clock::MonotonicClock;
 use jakkals::events::{JsonLines, Outcome};
-use jakkals::profile::Profile;
+use jakkals::profile::{self, Profile};
 use jakkals::provider::http::HttpProvider;
 use jakkals::run::{Task, run};
+use jakkals::tools::Toolbox;
 use jakkals::tools::local::LocalTools;
+use jakkals::tools::mcp::McpServer;
 
 /// The process's exit status, one per way a run can end, so a caller
 /// can branch without reading the events. Documented in ARCHITECTURE.md.
 const EXIT_DONE: u8 = 0;
-/// The run never started: a bad profile, key or directory. clap uses
-/// the same status for bad arguments. No events are written.
+/// The run never started: a bad profile, key or directory, or an MCP
+/// server that couldn't be set up. clap uses the same status for bad
+/// arguments. No events are written.
 const EXIT_SETUP: u8 = 2;
 const EXIT_LIMIT: u8 = 3;
 const EXIT_ERROR: u8 = 4;
@@ -80,18 +83,35 @@ async fn start(profile: &Path, model: &str, cwd: &Path, prompt: &str) -> Result<
     if !cwd.is_dir() {
         return Err(format!("--cwd {} is not a directory", cwd.display()));
     }
-    let mut tools = LocalTools::new(
+    let local = LocalTools::new(
         cwd,
         &profile.local_tools,
         profile.shell.as_ref(),
         std::env::var_os("PATH"),
     )
     .map_err(|error| error.to_string())?;
+    // Every key is read before any server is reached, so a missing one
+    // costs no connection.
+    let keys = profile
+        .mcp
+        .iter()
+        .map(|server| profile::mcp_key(server, |variable| std::env::var(variable).ok()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
     let config = profile
         .http_config(|variable| std::env::var(variable).ok())
         .map_err(|error| error.to_string())?;
     let mut provider =
         HttpProvider::new(config).map_err(|error| format!("the provider: {error}"))?;
+    let mut servers = Vec::with_capacity(profile.mcp.len());
+    for (settings, key) in profile.mcp.iter().zip(&keys) {
+        servers.push(
+            McpServer::connect(settings, key.as_deref())
+                .await
+                .map_err(|error| error.to_string())?,
+        );
+    }
+    let mut tools = Toolbox::new(local, servers);
 
     let task = Task {
         system_prompt: &profile.system_prompt,

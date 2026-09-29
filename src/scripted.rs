@@ -14,6 +14,7 @@ use crate::clock::Clock;
 use crate::conversation::{Message, ToolCall, ToolSpec};
 use crate::events::{Record, Sink};
 use crate::provider::{Provider, ProviderError, Reply, Request, Usage};
+use crate::tools::mcp::McpServerRecord;
 use crate::tools::shell::Sandbox;
 use crate::tools::{ToolOutcome, Tools};
 
@@ -92,6 +93,7 @@ pub struct ScriptedTools {
     clock: VirtualClock,
     specs: Vec<ToolSpec>,
     outcomes: VecDeque<(ToolOutcome, u64)>,
+    pub servers: Vec<McpServerRecord>,
     pub seen: Vec<ToolCall>,
 }
 
@@ -109,6 +111,7 @@ impl ScriptedTools {
             clock: clock.clone(),
             specs,
             outcomes: VecDeque::new(),
+            servers: Vec::new(),
             seen: Vec::new(),
         }
     }
@@ -126,6 +129,10 @@ impl Tools for ScriptedTools {
 
     fn sandbox(&self) -> Option<Sandbox> {
         None
+    }
+
+    fn servers(&self) -> Vec<McpServerRecord> {
+        self.servers.clone()
     }
 
     async fn call(&mut self, call: &ToolCall, _deadline_ms: u64) -> ToolOutcome {

@@ -24,16 +24,15 @@ Jakkals keeps the harness small and visible:
 It talks to [OpenRouter](https://openrouter.ai) and to any server that
 speaks the OpenAI-compatible chat completions API, such as a local LM
 Studio. Its tools are a handful of local ones (read, list, search, an
-allowlisted shell) plus whatever MCP servers the profile names.
+allowlisted shell) plus the tools it names from MCP servers.
 
 ## Status
 
 Early. `jakkals run` works end to end against OpenRouter or a local
 server, with the local tools `read`, `list`, `search` and an
 allowlisted `shell` (sandboxed on macOS and Linux) when the profile
-offers them.
-MCP comes next. The design is
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+offers them, and the tools it lists from MCP servers over streamable
+HTTP. The design is [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Running it
 

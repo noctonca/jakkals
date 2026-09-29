@@ -8,6 +8,7 @@ use serde::Serialize;
 use crate::provider::ProviderError;
 use crate::run::Limits;
 use crate::tools::ToolStatus;
+use crate::tools::mcp::McpServerRecord;
 use crate::tools::shell::Sandbox;
 
 /// An event with the run-relative time it happened at.
@@ -30,6 +31,10 @@ pub enum Event {
         sandbox: Option<Sandbox>,
         limits: Limits,
     },
+    /// One per MCP server, after `start`: what the server said of itself
+    /// and each of its tools as the model sees it, since the server, not
+    /// the profile, writes their descriptions.
+    McpServer(McpServerRecord),
     /// Written as a request leaves, so a slow call shows as in flight.
     ModelRequest {
         step: u32,

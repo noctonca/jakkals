@@ -19,6 +19,7 @@ use serde::de::DeserializeOwned;
 use serde_json::json;
 
 use crate::conversation::{ToolCall, ToolSpec};
+use crate::tools::mcp::McpServerRecord;
 use crate::tools::shell::{Sandbox, Shell, ShellSettings, ShellSetupError};
 use crate::tools::{Stop, ToolOutcome, Tools};
 
@@ -415,6 +416,10 @@ impl Tools for LocalTools {
 
     fn sandbox(&self) -> Option<Sandbox> {
         self.shell.as_ref().map(Shell::sandbox)
+    }
+
+    fn servers(&self) -> Vec<McpServerRecord> {
+        Vec::new()
     }
 
     async fn call(&mut self, call: &ToolCall, deadline_ms: u64) -> ToolOutcome {

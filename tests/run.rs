@@ -292,11 +292,20 @@ fn setup_faults_exit_2_with_no_events() {
         ("[limits]\nsteps = 5\n".to_owned(), KEY.to_vec(), "wall_s"),
         (
             format!(
-                "{}[mcp.memory]\nurl = \"http://127.0.0.1:9/mcp\"\n",
+                "{}[mcp.memory]\nurl = \"http://127.0.0.1:9/mcp\"\ntools = [\"recall\"]\n",
                 profile(address, 5)
             ),
             KEY.to_vec(),
-            "mcp",
+            "MCP server `memory`",
+        ),
+        (
+            format!(
+                "{}[mcp.memory]\nurl = \"http://127.0.0.1:9/mcp\"\ntools = [\"recall\"]\n\
+                 key_env = \"JAKKALS_TEST_MCP_KEY\"\n",
+                profile(address, 5)
+            ),
+            KEY.to_vec(),
+            "mcp.memory.key_env",
         ),
     ];
     for (text, env, named) in cases {
@@ -314,4 +323,133 @@ fn setup_faults_exit_2_with_no_events() {
     assert_eq!(ran.status, 2, "stderr: {}", ran.stderr);
     assert!(ran.events.is_empty());
     assert!(ran.stderr.contains("--cwd"), "{:?}", ran.stderr);
+}
+
+/// A fake MCP server offering `recall`, which answers every call with
+/// "a note". Streamable HTTP with plain JSON replies, one request per
+/// connection.
+fn serve_mcp() -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("loopback port");
+    let address = listener.local_addr().expect("bound address");
+    thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { return };
+            thread::spawn(move || answer_mcp(stream));
+        }
+    });
+    address
+}
+
+fn answer_mcp(stream: std::net::TcpStream) {
+    let mut reader = BufReader::new(stream.try_clone().expect("stream clones"));
+    let mut request_line = String::new();
+    if reader.read_line(&mut request_line).is_err() {
+        return;
+    }
+    let mut length = 0;
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line).is_err() {
+            return;
+        }
+        let line = line.trim_end().to_ascii_lowercase();
+        if line.is_empty() {
+            break;
+        }
+        if let Some(value) = line.strip_prefix("content-length:") {
+            length = value.trim().parse().expect("length is a number");
+        }
+    }
+    let mut body = vec![0; length];
+    if reader.read_exact(&mut body).is_err() {
+        return;
+    }
+    let reply = |status: u16, body: &str| {
+        format!(
+            "HTTP/1.1 {status} Canned\r\ncontent-type: application/json\r\n\
+             content-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    };
+    let text = if !request_line.starts_with("POST") {
+        reply(405, "")
+    } else {
+        let request: Value = serde_json::from_slice(&body).expect("a JSON-RPC body");
+        match request.get("id") {
+            None => reply(202, ""),
+            Some(id) => {
+                let result = match request["method"].as_str() {
+                    Some("initialize") => json!({
+                        "protocolVersion": "2025-06-18",
+                        "capabilities": {"tools": {}},
+                        "serverInfo": {"name": "fake-memory", "version": "0.1.0"}
+                    }),
+                    Some("tools/list") => json!({"tools": [{
+                        "name": "recall",
+                        "description": "Recall a note.",
+                        "inputSchema": {"type": "object"}
+                    }]}),
+                    Some("tools/call") => {
+                        json!({"content": [{"type": "text", "text": "a note"}]})
+                    }
+                    other => panic!("the fake MCP server doesn't answer {other:?}"),
+                };
+                reply(
+                    200,
+                    &json!({"jsonrpc": "2.0", "id": id, "result": result}).to_string(),
+                )
+            }
+        }
+    };
+    let mut stream = stream;
+    let _ = stream.write_all(text.as_bytes());
+}
+
+#[test]
+fn an_mcp_tool_is_offered_recorded_and_called() {
+    let dir = TempDir::new("mcp");
+    let mcp = serve_mcp();
+    let address = serve(vec![
+        (200, tool_call("memory_recall")),
+        (200, answer("A note.")),
+    ]);
+    let text = format!(
+        "{}\n[mcp.memory]\nurl = \"http://{mcp}/mcp\"\ntools = [\"recall\"]\n",
+        profile(address, 5)
+    );
+    let ran = run(&dir, &text, &KEY);
+
+    assert_eq!(ran.status, 0, "stderr: {}", ran.stderr);
+    assert_eq!(
+        types(&ran.events),
+        [
+            "start",
+            "mcp_server",
+            "model_request",
+            "model_call",
+            "tool_call",
+            "model_request",
+            "model_call",
+            "answer",
+            "exit"
+        ]
+    );
+    assert_eq!(ran.events[0]["tools"], json!(["memory_recall"]));
+    let server = &ran.events[1];
+    assert_eq!(server["server"], "memory");
+    assert_eq!(server["server_name"], "fake-memory");
+    assert_eq!(server["server_version"], "0.1.0");
+    assert_eq!(server["protocol_version"], "2025-06-18");
+    assert_eq!(
+        server["tools"],
+        json!([{
+            "name": "memory_recall",
+            "description": "Recall a note.",
+            "parameters": {"type": "object"}
+        }])
+    );
+    let call = &ran.events[4];
+    assert_eq!(call["tool"], "memory_recall");
+    assert_eq!(call["status"], "ok");
+    assert_eq!(call["result_bytes"], 6);
 }
