@@ -35,6 +35,7 @@ fn minimal_profile_takes_the_documented_defaults() {
                 api_key_env: None,
                 params: Map::new(),
             },
+            local_tools: Vec::new(),
             // `shasum -a 256` of the same bytes.
             hash: "sha256:0ecfa70ca44c48c52c8b8636f358d73c955fb22d383c103433c2bdc5488a91cd"
                 .to_owned(),
@@ -65,6 +66,9 @@ api_key_env = "TEST_PROVIDER_KEY"
 temperature = 0.2
 max_tokens = 1000
 reasoning = { effort = "low" }
+
+[tools]
+local = ["search", "read", "list"]
 "#;
     let profile = Profile::parse(text).expect("the profile is valid");
 
@@ -90,6 +94,11 @@ reasoning = { effort = "low" }
                 .expect("an object")
                 .clone(),
         }
+    );
+    assert_eq!(
+        profile.local_tools,
+        [LocalTool::Read, LocalTool::List, LocalTool::Search],
+        "offered in a fixed order, whatever the order written"
     );
 }
 
@@ -123,6 +132,14 @@ fn toml_faults_are_refused_with_their_position() {
             "unknown field `key`",
         ),
         (&format!("{MINIMAL}models = []\n"), "unknown field `models`"),
+        (
+            &format!("{MINIMAL}[tools]\nlocal = [\"write\"]\n"),
+            "unknown variant `write`",
+        ),
+        (
+            &format!("{MINIMAL}[tools]\nremote = []\n"),
+            "unknown field `remote`",
+        ),
         ("[limits]\nsteps = -1\nwall_s = 600\n", "steps"),
         ("[limits]\nsteps = 30\nwall_s = \"600\"\n", "wall_s"),
         (&with_limits("cost_usd = \"0.5\""), "cost_usd"),
@@ -173,6 +190,10 @@ fn values_the_harness_cant_run_with_are_refused() {
             &format!("{MINIMAL}[provider.params]\nmodel = \"other/model\"\n"),
             "provider.params",
         ),
+        (
+            &format!("{MINIMAL}[tools]\nlocal = [\"read\", \"list\", \"read\"]\n"),
+            "tools.local",
+        ),
     ];
     for (text, field) in cases {
         let error = invalid(text);
@@ -186,7 +207,18 @@ fn values_the_harness_cant_run_with_are_refused() {
 #[test]
 fn capabilities_not_built_are_refused_not_ignored() {
     let cases = [
-        (format!("{MINIMAL}[tools]\nlocal = [\"read\"]\n"), "tools"),
+        (
+            format!("{MINIMAL}[tools]\nlocal = [\"read\", \"shell\"]\n"),
+            "tools.local \"shell\"",
+        ),
+        (
+            format!("{MINIMAL}[tools]\nshell_allow = [\"git log\"]\n"),
+            "tools.shell_allow",
+        ),
+        (
+            format!("{MINIMAL}[tools]\nsandbox = \"none\"\n"),
+            "tools.sandbox",
+        ),
         (
             format!("{MINIMAL}[mcp.memory]\nurl = \"https://example.com/mcp\"\n"),
             "mcp",

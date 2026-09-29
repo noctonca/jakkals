@@ -29,8 +29,8 @@ allowlisted shell) plus whatever MCP servers the profile names.
 ## Status
 
 Early. `jakkals run` works end to end against OpenRouter or a local
-server, but offers the model no tools yet: it can only answer. Local
-tools and MCP come next. The design is
+server, with the local tools `read`, `list` and `search` when the
+profile offers them. The shell tool and MCP come next. The design is
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Running it
@@ -45,6 +45,9 @@ cost_usd = 0.50
 
 [provider]
 api_key_env = "OPENROUTER_API_KEY"
+
+[tools]
+local = ["read", "list", "search"]
 ```
 
 Then:
