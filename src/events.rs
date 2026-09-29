@@ -24,6 +24,11 @@ pub struct Record {
 pub enum Event {
     Start {
         version: String,
+        /// The commit the build came from; `None` when unknown.
+        commit: Option<String>,
+        /// Whether the build's files differed from `commit`; `None`
+        /// when unknown.
+        dirty: Option<bool>,
         profile_hash: String,
         model: String,
         tools: Vec<String>,

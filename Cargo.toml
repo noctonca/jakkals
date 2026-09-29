@@ -1,6 +1,6 @@
 [package]
 name = "jakkals"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT OR Apache-2.0"
@@ -10,7 +10,7 @@ readme = "README.md"
 keywords = ["agent", "llm", "mcp", "cli", "openrouter"]
 categories = ["command-line-utilities", "development-tools"]
 # Ship only code, README and licences (the docs live in the repo).
-include = ["src/**", "README.md", "LICENSE-*"]
+include = ["src/**", "build.rs", "README.md", "LICENSE-*"]
 
 # Every dependency added here must first earn its row in
 # docs/ARCHITECTURE.md "The dependency register".

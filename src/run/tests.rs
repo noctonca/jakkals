@@ -9,6 +9,11 @@ use crate::tools::mcp::McpServerRecord;
 use crate::transcript::{JsonLinesTranscript, NoTranscript};
 
 const TASK: Task<'static> = Task {
+    build: Build {
+        version: "9.8.7",
+        commit: Some("0123456789abcdef0123456789abcdef01234567"),
+        dirty: Some(false),
+    },
     system_prompt: "You are a test.",
     prompt: "What is in the box?",
     model: "test/model",
@@ -122,11 +127,8 @@ fn the_event_stream_has_the_documented_shape() {
         &mut NoTranscript,
     ));
 
-    let version = env!("CARGO_PKG_VERSION");
     let expected = [
-        format!(
-            r#"{{"type":"start","version":"{version}","profile_hash":"hash","model":"test/model","tools":["read"],"sandbox":null,"limits":{{"steps":10,"wall_s":60,"cost_nano_usd":null,"tokens":null,"context_tokens":null,"tool_output_bytes":1000}},"transcript":null,"t_ms":0}}"#
-        ),
+        r#"{"type":"start","version":"9.8.7","commit":"0123456789abcdef0123456789abcdef01234567","dirty":false,"profile_hash":"hash","model":"test/model","tools":["read"],"sandbox":null,"limits":{"steps":10,"wall_s":60,"cost_nano_usd":null,"tokens":null,"context_tokens":null,"tool_output_bytes":1000},"transcript":null,"t_ms":0}"#.to_owned(),
         r#"{"type":"model_request","step":1,"messages":2,"t_ms":0}"#.to_owned(),
         r#"{"type":"model_call","step":1,"generation_id":"gen-1","model":"test/model-served","provider":"TestCloud","input_tokens":100,"output_tokens":10,"cached_tokens":null,"reasoning_tokens":null,"cost_nano_usd":1500,"duration_ms":250,"finish_reason":"tool_calls","t_ms":250}"#.to_owned(),
         r#"{"type":"tool_call","step":1,"tool":"read","arguments":"{}","status":"ok","result_bytes":5,"cut":false,"duration_ms":20,"t_ms":270}"#.to_owned(),

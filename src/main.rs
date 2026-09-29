@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::{Parser, Subcommand};
 
+use jakkals::build_info;
 use jakkals::clock::{Clock, MonotonicClock};
 use jakkals::events::{Event, JsonLines, Outcome, Record, Sink};
 use jakkals::profile::{self, Profile};
@@ -31,7 +32,7 @@ const EXIT_LIMIT: u8 = 3;
 const EXIT_ERROR: u8 = 4;
 
 #[derive(Parser)]
-#[command(version, about)]
+#[command(version = build_info::VERSION_TEXT, about)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -183,6 +184,7 @@ async fn start(
     };
 
     let task = Task {
+        build: build_info::THIS,
         system_prompt: &profile.system_prompt,
         prompt,
         model,
