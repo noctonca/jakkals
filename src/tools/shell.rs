@@ -53,9 +53,38 @@ const SEATBELT_PROFILE: &str = include_str!("shell/seatbelt.sb");
 pub enum Sandbox {
     /// macOS's Seatbelt, through `sandbox-exec`.
     Seatbelt,
+    /// Linux's Landlock, with a seccomp filter for sockets.
+    Landlock,
     /// Word checks only.
     None,
 }
+
+impl Sandbox {
+    /// This system's own sandbox, the default: none where Jakkals has
+    /// none, so the profile must say `none` there.
+    pub fn native() -> Option<Sandbox> {
+        if cfg!(target_os = "macos") {
+            Some(Sandbox::Seatbelt)
+        } else if LANDLOCK_BUILT {
+            Some(Sandbox::Landlock)
+        } else {
+            None
+        }
+    }
+}
+
+/// Whether this build has the Landlock sandbox: Linux, on the
+/// architectures its seccomp filter knows.
+const LANDLOCK_BUILT: bool = cfg!(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+));
+
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+mod landlock;
 
 /// The shell's settings, as the profile gives them.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -96,6 +125,13 @@ pub fn words(text: &str) -> Result<Vec<String>, WordsError> {
 pub enum ShellSetupError {
     /// `seatbelt` asked for on a system without it.
     SeatbeltNeedsMacos,
+    /// `landlock` asked for on a system without it.
+    LandlockNeedsLinux,
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
+    Landlock(landlock::LandlockError),
     /// A `tools.sandbox_read` path that can't be resolved.
     SandboxRead {
         path: PathBuf,
@@ -110,6 +146,36 @@ impl fmt::Display for ShellSetupError {
                 formatter,
                 "tools.sandbox `seatbelt` needs macOS; write sandbox = \"none\" to run with word checks only"
             ),
+            Self::LandlockNeedsLinux => write!(
+                formatter,
+                "tools.sandbox `landlock` needs Linux on x86_64 or aarch64; write sandbox = \"none\" to run with word checks only"
+            ),
+            #[cfg(all(
+                target_os = "linux",
+                any(target_arch = "x86_64", target_arch = "aarch64")
+            ))]
+            Self::Landlock(error) => match error {
+                landlock::LandlockError::Abi(abi) => write!(
+                    formatter,
+                    "tools.sandbox `landlock` needs Landlock ABI {} (Linux 6.2) or later, enabled in the kernel; this one has {}",
+                    landlock::ABI_REQUIRED,
+                    if *abi == 0 {
+                        "none".to_owned()
+                    } else {
+                        format!("ABI {abi}")
+                    }
+                ),
+                landlock::LandlockError::Path { path, error } => {
+                    write!(
+                        formatter,
+                        "tools.sandbox `landlock`, allowing {}: {error}",
+                        path.display()
+                    )
+                }
+                landlock::LandlockError::Syscall { call, error } => {
+                    write!(formatter, "tools.sandbox `landlock`, {call}: {error}")
+                }
+            },
             Self::SandboxRead { path, error } => {
                 write!(formatter, "tools.sandbox_read {}: {error}", path.display())
             }
@@ -125,9 +191,23 @@ pub struct Shell {
     settings: ShellSettings,
     /// `PATH` for commands: Jakkals's own, the only variable passed.
     path_env: Option<OsString>,
+    confinement: Confinement,
+}
+
+/// A sandbox, set up.
+enum Confinement {
+    None,
     /// The Seatbelt profile with a rule per read path, and the
     /// `-D name=value` parameters those rules name.
-    seatbelt: Option<(String, Vec<OsString>)>,
+    Seatbelt {
+        profile: String,
+        parameters: Vec<OsString>,
+    },
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
+    Landlock(landlock::Landlock),
 }
 
 impl Shell {
@@ -145,20 +225,37 @@ impl Shell {
             settings.timeout_s > 0,
             "the profile requires a positive timeout"
         );
-        let seatbelt = match settings.sandbox {
-            Sandbox::None => None,
+        // A sandbox matches the path a file really has, so a symlinked
+        // prefix is allowed where it leads.
+        let mut read = Vec::with_capacity(settings.sandbox_read.len());
+        for path in &settings.sandbox_read {
+            read.push(
+                path.canonicalize()
+                    .map_err(|error| ShellSetupError::SandboxRead {
+                        path: path.clone(),
+                        error,
+                    })?,
+            );
+        }
+        let confinement = match settings.sandbox {
+            Sandbox::None => Confinement::None,
             Sandbox::Seatbelt => {
                 if !cfg!(target_os = "macos") {
                     return Err(ShellSetupError::SeatbeltNeedsMacos);
                 }
-                Some(seatbelt(root, &settings.sandbox_read)?)
+                let (profile, parameters) = seatbelt(root, &read);
+                Confinement::Seatbelt {
+                    profile,
+                    parameters,
+                }
             }
+            Sandbox::Landlock => landlock_confinement(root, &read)?,
         };
         Ok(Self {
             root: root.to_owned(),
             settings: settings.clone(),
             path_env,
-            seatbelt,
+            confinement,
         })
     }
 
@@ -267,13 +364,26 @@ impl Shell {
     }
 
     fn command(&self, words: &[String]) -> Command {
-        let mut command = match &self.seatbelt {
-            None => {
+        let mut command = match &self.confinement {
+            Confinement::None => {
                 let mut command = Command::new(&words[0]);
                 command.args(&words[1..]);
                 command
             }
-            Some((profile, parameters)) => {
+            #[cfg(all(
+                target_os = "linux",
+                any(target_arch = "x86_64", target_arch = "aarch64")
+            ))]
+            Confinement::Landlock(landlock) => {
+                let mut command = Command::new(&words[0]);
+                command.args(&words[1..]);
+                landlock.confine(&mut command);
+                command
+            }
+            Confinement::Seatbelt {
+                profile,
+                parameters,
+            } => {
                 let mut command = Command::new(SANDBOX_EXEC);
                 command.arg("-p").arg(profile);
                 for parameter in parameters {
@@ -306,25 +416,35 @@ pub(crate) struct ShellArguments {
 /// The profile text and its parameters: the working directory as
 /// `CWD`, and each read path as `READ_n` with a rule allowing it.
 /// Passed as parameters, so no path is ever quoted into the profile.
-fn seatbelt(root: &Path, read: &[PathBuf]) -> Result<(String, Vec<OsString>), ShellSetupError> {
+fn seatbelt(root: &Path, read: &[PathBuf]) -> (String, Vec<OsString>) {
     let mut profile = SEATBELT_PROFILE.to_owned();
     let mut parameters = vec![parameter("CWD", root)];
     for (index, path) in read.iter().enumerate() {
-        // Seatbelt matches the path a file really has, so a symlinked
-        // prefix is allowed where it leads.
-        let resolved = path
-            .canonicalize()
-            .map_err(|error| ShellSetupError::SandboxRead {
-                path: path.clone(),
-                error,
-            })?;
         let name = format!("READ_{index}");
         profile.push_str(&format!(
             "(allow file-read* (subpath (param \"{name}\")))\n"
         ));
-        parameters.push(parameter(&name, &resolved));
+        parameters.push(parameter(&name, path));
     }
-    Ok((profile, parameters))
+    (profile, parameters)
+}
+
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+fn landlock_confinement(root: &Path, read: &[PathBuf]) -> Result<Confinement, ShellSetupError> {
+    landlock::Landlock::new(root, read)
+        .map(Confinement::Landlock)
+        .map_err(ShellSetupError::Landlock)
+}
+
+#[cfg(not(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+)))]
+fn landlock_confinement(_root: &Path, _read: &[PathBuf]) -> Result<Confinement, ShellSetupError> {
+    Err(ShellSetupError::LandlockNeedsLinux)
 }
 
 fn parameter(name: &str, path: &Path) -> OsString {

@@ -98,7 +98,7 @@ below is the design, settled by the change that builds it.
 | `provider.params` | Temperature, max tokens and the like, passed through as given. May not set `model`, `messages`, `tools` or `stream`. | none |
 | `tools.local` | The local tools offered, by name: `read`, `list`, `search`, `shell`. Offered in that order whatever the order written; a name twice is refused. See [The local tools](#the-local-tools) and [The shell tool](#the-shell-tool). | none |
 | `tools.shell_allow` | The commands `shell` may run, each as its leading words (`git log`). Required when `shell` is offered. | none |
-| `tools.sandbox` | How shell commands are confined: `seatbelt` (macOS) or `none`, which must be written out. | `seatbelt` |
+| `tools.sandbox` | How shell commands are confined: `seatbelt` (macOS), `landlock` (Linux) or `none`, which must be written out. | the system's own: `seatbelt` on macOS, `landlock` on Linux |
 | `tools.sandbox_read` | Absolute paths the sandbox also lets commands read, for programs and their libraries installed outside the system's own paths (a package manager's prefix). | none |
 | `tools.shell_timeout_s` | Seconds a shell command may run before it is killed. | 30 |
 | `mcp.<name>` | Not built. An MCP server: `url`, and the environment variable holding its key; optional tool allow or deny list. | |
@@ -263,22 +263,42 @@ job. `tools.sandbox` confines each command at the OS level.
 
 | Sandbox | Status |
 |---|---|
-| `seatbelt` | macOS, through `sandbox-exec` and [`src/tools/shell/seatbelt.sb`](../src/tools/shell/seatbelt.sb). The default. |
+| `seatbelt` | macOS, through `sandbox-exec` and [`src/tools/shell/seatbelt.sb`](../src/tools/shell/seatbelt.sb). The default there. |
+| `landlock` | Linux on x86_64 or aarch64, through Landlock and a seccomp filter: [`src/tools/shell/landlock.rs`](../src/tools/shell/landlock.rs). The default there. |
 | `none` | Word checks only. Must be written out in the profile. |
-| `landlock` | Linux. Later, when a run needs Linux. |
 | `container` | Later: commands run in a throwaway container, where writes, even destructive ones, can be allowed and watched. |
 
-Under `seatbelt` a command may read the working directory, the paths
-in `tools.sandbox_read`, and what a program needs to start: the
-system's own directories (`/bin`, `/sbin`, `/usr` but for
-`/usr/local`, `/System`, the loader's cache, the time zones). It may
-read any file's metadata (size and times, not content), since programs
-resolve paths through their parents. It may write nothing but
-`/dev/null` and has no network. A denied read or write is the
-program's own error (`Operation not permitted`), in its output. A
-program installed elsewhere, such as Homebrew's under `/opt/homebrew`,
-can't even start until its prefix is in `tools.sandbox_read`. On
-anything but macOS, `seatbelt` stops the run before it starts.
+Both sandboxes draw the same line. A command may read the working
+directory, the paths in `tools.sandbox_read`, and what a program needs
+to start: the system's own directories, never `/usr/local`, where
+package managers install. It may read any file's metadata (size and
+times, not content), since programs resolve paths through their
+parents. It may write nothing but `/dev/null`, and it has no network.
+A denied read or write is the program's own error, in its output. A
+program installed elsewhere, such as Homebrew's under `/opt/homebrew`
+or Rust's under `~/.cargo`, can't even start until its prefix is in
+`tools.sandbox_read`. Asking for a sandbox the system lacks stops the
+run before it starts.
+
+Under `seatbelt` the system's directories are `/bin`, `/sbin`, `/usr`,
+`/System`, the loader's cache and the time zones; a denial reads
+`Operation not permitted`. Other processes can't be signalled.
+
+Under `landlock` they are `/bin`, `/sbin`, the `/lib` directories,
+`/usr`, the loader's cache and configuration and `/etc/localtime`, plus
+reading `/dev/zero`, `/dev/random` and `/dev/urandom`; `/proc` is not
+among them, so another process's command line and environment stay
+unread. A denied file reads `Permission denied`. The kernel must offer
+Landlock ABI 3 (Linux 6.2) or later, the first that stops every write,
+truncating included; Jakkals uses that ABI's rules and no later ones,
+so a command is confined the same on every kernel it runs on. The
+network goes by a seccomp filter instead, since Landlock's own network
+rules cover TCP only: no socket of any kind can be opened (`Operation
+not permitted`), which also keeps a command from any daemon listening
+on a Unix socket, and neither can io_uring, which could open one
+without the call. One gap against `seatbelt`: Landlock can't stop a
+command signalling the user's other processes until ABI 6, so under
+`landlock` an allowlisted `kill` could.
 
 The sandbox is on by default, an exception to capabilities being off
 by default, because it takes power away rather than adding it. A run's
@@ -348,4 +368,4 @@ Every dependency has a row here before it enters `Cargo.toml`.
 | `grep-searcher`, `grep-regex` | The `search` tool: ripgrep's line searcher (binary detection, bounded line buffer) and its regex matcher. | yes |
 | `sha2` | The profile hash. | yes |
 | `shlex` | Splitting a shell command into words with the shell's quoting rules, without a shell. | yes |
-| `libc` | Killing a timed-out command's whole process group (`killpg`), which `std` can't. | yes |
+| `libc` | Killing a timed-out command's whole process group (`killpg`), and the Landlock and seccomp calls, which `std` lacks. | yes |

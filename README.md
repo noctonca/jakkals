@@ -30,7 +30,8 @@ allowlisted shell) plus whatever MCP servers the profile names.
 
 Early. `jakkals run` works end to end against OpenRouter or a local
 server, with the local tools `read`, `list`, `search` and an
-allowlisted `shell` (sandboxed on macOS) when the profile offers them.
+allowlisted `shell` (sandboxed on macOS and Linux) when the profile
+offers them.
 MCP comes next. The design is
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
