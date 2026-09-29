@@ -18,6 +18,9 @@ pub struct Task<'a> {
     pub prompt: &'a str,
     pub model: &'a str,
     pub profile_hash: &'a str,
+    /// Where the transcript is written, recorded in the `start` event;
+    /// `None` when no transcript is asked for.
+    pub transcript: Option<&'a str>,
 }
 
 /// The profile's limits, in the profile's units except cost.
@@ -81,6 +84,7 @@ where
         tools: tools.specs().iter().map(|spec| spec.name.clone()).collect(),
         sandbox: tools.sandbox(),
         limits: *limits,
+        transcript: task.transcript.map(str::to_owned),
     });
     for server in tools.servers() {
         run.emit(Event::McpServer(server));

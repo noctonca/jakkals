@@ -383,6 +383,7 @@ fn the_loop_hands_a_read_back_to_the_model() {
         prompt: "What is in the box?",
         model: "test/model",
         profile_hash: "hash",
+        transcript: None,
     };
     let limits = Limits {
         steps: 5,

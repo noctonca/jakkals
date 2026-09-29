@@ -3,6 +3,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::{Parser, Subcommand};
 
@@ -50,19 +51,22 @@ enum Command {
         /// The task.
         #[arg(long)]
         prompt: String,
-        /// Also write the conversation to this new file (mode 600), one
-        /// JSON line per message. It holds everything the model saw.
-        #[arg(long)]
-        transcript: Option<PathBuf>,
+        /// Also write the conversation to a new file (mode 600), one JSON
+        /// line per message. It holds everything the model saw. Without a
+        /// path, it goes in $XDG_DATA_HOME/jakkals/transcripts (default
+        /// ~/.local/share/jakkals/transcripts), named for the start time.
+        #[arg(long, value_name = "PATH")]
+        transcript: Option<Option<PathBuf>>,
         /// Include each reply's reasoning text in the transcript.
         #[arg(long, requires = "transcript")]
         transcript_reasoning: bool,
     },
 }
 
-/// Where the run's transcript goes, if anywhere.
+/// A transcript the run was asked for.
 struct TranscriptRequest<'a> {
-    path: &'a Path,
+    /// `None` for the default folder and a generated name.
+    path: Option<&'a Path>,
     reasoning: bool,
 }
 
@@ -80,8 +84,8 @@ async fn main() -> ExitCode {
             transcript,
             transcript_reasoning,
         } => {
-            let transcript = transcript.as_deref().map(|path| TranscriptRequest {
-                path,
+            let transcript = transcript.as_ref().map(|path| TranscriptRequest {
+                path: path.as_deref(),
                 reasoning: transcript_reasoning,
             });
             match start(&profile, &model, &cwd, &prompt, transcript).await {
@@ -143,19 +147,25 @@ async fn start(
     let mut tools = Toolbox::new(local, servers);
     // Created last, so a run that fails setup leaves no empty file whose
     // path the next attempt would be refused.
-    let mut transcript = transcript
-        .map(|request| {
-            transcript::create(request.path)
-                .map(|file| JsonLinesTranscript::new(file, request.reasoning))
-                .map_err(|error| format!("--transcript {}: {error}", request.path.display()))
-        })
-        .transpose()?;
+    let (mut transcript, transcript_path) = match transcript {
+        None => (None, None),
+        Some(request) => {
+            let path = transcript_path(request.path)?;
+            let file = transcript::create(&path)
+                .map_err(|error| format!("--transcript {}: {error}", path.display()))?;
+            (
+                Some(JsonLinesTranscript::new(file, request.reasoning)),
+                Some(path.to_string_lossy().into_owned()),
+            )
+        }
+    };
 
     let task = Task {
         system_prompt: &profile.system_prompt,
         prompt,
         model,
         profile_hash: &profile.hash,
+        transcript: transcript_path.as_deref(),
     };
     let mut sink = JsonLines::new(std::io::stdout().lock());
     Ok(run(
@@ -168,6 +178,25 @@ async fn start(
         &mut transcript,
     )
     .await)
+}
+
+/// The transcript's absolute path: the one given, or a new name in the
+/// default folder, which is made if missing.
+fn transcript_path(given: Option<&Path>) -> Result<PathBuf, String> {
+    if let Some(path) = given {
+        return std::path::absolute(path)
+            .map_err(|error| format!("--transcript {}: {error}", path.display()));
+    }
+    let folder =
+        transcript::default_folder(std::env::var_os("XDG_DATA_HOME"), std::env::var_os("HOME"))
+            .ok_or("--transcript: neither XDG_DATA_HOME nor HOME is an absolute path")?;
+    transcript::create_folder(&folder)
+        .map_err(|error| format!("--transcript {}: {error}", folder.display()))?;
+    let unix_s = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("the clock is after 1970")
+        .as_secs();
+    Ok(folder.join(transcript::file_name(unix_s, std::process::id())))
 }
 
 #[cfg(test)]

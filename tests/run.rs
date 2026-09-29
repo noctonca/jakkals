@@ -371,11 +371,71 @@ fn a_transcript_records_the_conversation_and_asked_for_reasoning() {
     assert_eq!(lines[1]["text"], "What is in the box?");
     assert_eq!(lines[2]["text"], "A cat.");
     assert_eq!(lines[2]["reasoning"], "Check the box.");
+    assert_eq!(ran.events[0]["transcript"], path.to_str().expect("UTF-8"));
     let mode = std::fs::metadata(&path)
         .expect("exists")
         .permissions()
         .mode();
     assert_eq!(mode & 0o777, 0o600);
+}
+
+#[test]
+fn a_bare_transcript_goes_in_the_data_folder_under_a_generated_name() {
+    let dir = TempDir::new("transcript-default");
+    let address = serve(vec![(200, answer("A cat."))]);
+    let data = dir.0.join("data");
+    let data_home = data.to_str().expect("UTF-8");
+    let env = [KEY[0], ("XDG_DATA_HOME", data_home)];
+    // A bare --transcript followed by another option: the option isn't
+    // taken as its path.
+    let extra = [
+        OsString::from("--transcript"),
+        OsString::from("--transcript-reasoning"),
+    ];
+    let ran = run_with(&dir, &dir.0, &profile(address, 5), &env, &extra);
+    assert_eq!(ran.status, 0, "stderr: {}", ran.stderr);
+
+    let folder = data.join("jakkals/transcripts");
+    let files: Vec<PathBuf> = std::fs::read_dir(&folder)
+        .expect("the folder was made")
+        .map(|entry| entry.expect("an entry").path())
+        .collect();
+    let [file] = files.as_slice() else {
+        panic!("one transcript, not {files:?}");
+    };
+    let name = file
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("a UTF-8 name");
+    // `2026-01-31T14-05-09Z-<pid>.jsonl`: the shape, not the moment.
+    let bytes = name.as_bytes();
+    assert!(name.ends_with(".jsonl") && bytes.len() > 27, "{name}");
+    assert_eq!(
+        (bytes[10], bytes[19], bytes[20]),
+        (b'T', b'Z', b'-'),
+        "{name}"
+    );
+    assert!(!name.contains(':'), "{name}");
+    assert_eq!(ran.events[0]["transcript"], file.to_str().expect("UTF-8"));
+    let lines = std::fs::read_to_string(file)
+        .expect("readable")
+        .lines()
+        .count();
+    assert_eq!(lines, 3, "system, user, assistant");
+    let mode = std::fs::metadata(&folder)
+        .expect("exists")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o700);
+}
+
+#[test]
+fn without_a_transcript_the_start_says_none() {
+    let dir = TempDir::new("no-transcript");
+    let address = serve(vec![(200, answer("A cat."))]);
+    let ran = run(&dir, &profile(address, 5), &KEY);
+    assert_eq!(ran.status, 0, "stderr: {}", ran.stderr);
+    assert_eq!(ran.events[0]["transcript"], Value::Null);
 }
 
 #[test]
