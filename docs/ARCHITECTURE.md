@@ -47,6 +47,22 @@ the reply, appends the results and repeats, until the model answers
 without tool calls or a limit is hit. The provider, tools, clock and
 event sink are traits, so tests drive the loop with canned replies.
 
+The loop's rules, each pinned by a scripted test in `src/run/tests.rs`:
+
+- An answer (a reply without tool calls) ends the run as `done`, even
+  past a limit: the limits bound work still to come.
+- After a reply with tool calls, the limits are checked before the
+  tools run, in the profile's order (`steps`, `cost_usd`, `tokens`,
+  `context_tokens`), so no tool runs whose result no model call would
+  read.
+- The deadline (`wall_s`) is checked before every model call, and the
+  time left is handed to the provider and each tool as their own
+  deadline. A provider that runs out of it ends the run as `limit`
+  `wall_s`; tool calls still queued when it passes are not run.
+- A call to a tool the profile doesn't offer never reaches the tools:
+  the loop refuses it, and the refusal goes back to the model.
+- Tool calls in one reply run in the order the model wrote them.
+
 ## The profile (proposed)
 
 One TOML file, and the run's first event carries the profile's hash.
@@ -57,7 +73,7 @@ a documented default.
 
 | Field | What it sets |
 |---|---|
-| `system_prompt` | The system message, verbatim. Empty is allowed. |
+| `system_prompt` | The system message, verbatim. Empty means no system message is sent. |
 | `tools.local` | Which local tools exist: `read`, `list`, `search`, `shell`. |
 | `tools.shell_allow` | The shell's allowlist, as leading whole words (`git log`). See [The shell tool](#the-shell-tool). |
 | `tools.sandbox` | How shell commands are confined: `seatbelt` (macOS) by default; `none` must be written out. |
@@ -83,11 +99,13 @@ after it.
 | `start` | Jakkals version, profile hash, model, tool names, and the limits in force. |
 | `model_request` | Step, number of messages sent. Written as the request leaves, so a slow call shows as in flight and a run killed mid-call shows which call it died in. |
 | `model_call` | The reply to a `model_request`: step, generation id, model and provider that served it, input/output/cached tokens, cost, duration, finish reason. |
-| `tool_call` | Step, tool, arguments, result size, whether it was cut or refused, duration. |
+| `tool_call` | Step, tool, arguments as the model wrote them, `status` (`ok`, `failed`, `refused`), the result's size before any cut, whether it was cut, duration. |
 | `answer` | The final text. |
-| `exit` | Why the run ended: `done`, `limit` (which one), `refused`, `error` (typed), and the totals. |
+| `exit` | Why the run ended, as `reason`: `done`; `limit` with `which`; or `error` with a typed `error` (`{"kind":"provider","provider_error":"status","status":429,…}`, `{"kind":"cost_unreported"}`). And the totals: steps, tool calls, input and output tokens, cost. |
 
-A run with no `exit` line did not end cleanly and is void.
+A run with no `exit` line did not end cleanly and is void. Costs are
+in billionths of a US dollar (`cost_nano_usd`), integers, `null` where
+not reported.
 
 ## Survivable failures (proposed)
 
@@ -180,7 +198,7 @@ Every dependency has a row here before it enters `Cargo.toml`.
 | `clap` (derive) | The CLI's parsing and help. | yes |
 | `tokio` | `rmcp` and `reqwest` are async; one runtime for both. | not yet |
 | `reqwest` (rustls) | HTTP to the provider. | not yet |
-| `serde`, `serde_json` | Wire types, events. | not yet |
+| `serde`, `serde_json` | Wire types, events. | yes |
 | `toml` | The profile. | not yet |
 | `rmcp` | MCP client. | not yet |
 | `ignore`, `grep-searcher` | The `list` and `search` tools, with ripgrep's ignore rules. | not yet |

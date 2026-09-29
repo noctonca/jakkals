@@ -23,7 +23,9 @@ nobody watching.
 - **Explicit integer sizes** at every seam: `u32`, `u64`, never
   `usize` for anything that isn't an index into memory. Money is
   never a float in our arithmetic: cost is kept as the provider
-  reports it and summed in integer micro-units.
+  reports it and summed in integer nano-dollars (billionths): a
+  cheap model's call can cost less than a millionth of a dollar, so
+  micro-units would round it away.
 
 ## Named limits
 
