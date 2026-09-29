@@ -189,6 +189,37 @@ hard bound is the credit limit on the provider key. With the limit
 set, a reply that reports no cost ends the run with error
 `cost_unreported`, since the limit could no longer be enforced.
 
+## The provider
+
+[`src/provider/http.rs`](../src/provider/http.rs) speaks OpenAI-compatible
+chat completions. Each model call is one `POST` to
+`{provider.base_url}/chat/completions`, carrying the model, the
+conversation, the tools (left out when there are none) and
+`provider.params` as given. The params may not set `model`, `messages`,
+`tools` or `stream`, which are the run's own. A key, where the profile
+names one, goes as a bearer token.
+
+Nothing happens on the side: no retries, and no redirects (a 3xx
+ends the call as a status error). The run's time left is the request's
+timeout, covering connecting, sending and reading the whole reply.
+
+| The call | Ends as |
+|---|---|
+| A 2xx with one completion | The reply. |
+| A non-2xx status | `status`, with the body, cut at 16 KiB and marked. |
+| The deadline passes | `deadline`, so the run exits `limit` `wall_s`. |
+| No answer (refused, reset, TLS) | `transport`, with the cause. |
+| A 2xx that isn't one completion: not JSON, an error object, no or several choices, no usage, a cost that isn't a number, a body past 16 MiB | `malformed`, with what was wrong. |
+
+From a reply Jakkals keeps the text, the tool calls, the usage (with
+cached tokens where reported), `usage.cost`, the `id` (OpenRouter's
+generation id), the model and provider that served it, and the finish
+reason. Other fields are dropped; a reasoning model's reasoning text
+among them, so it is not sent back on the next call. The cost is read
+from the number's decimal digits, never through a float, and rounded
+to the nearest nano-dollar. A server that reports cost only when asked
+is asked through `provider.params`.
+
 ## The dependency register
 
 Every dependency has a row here before it enters `Cargo.toml`.
@@ -196,9 +227,9 @@ Every dependency has a row here before it enters `Cargo.toml`.
 | Crate | Why | In `Cargo.toml` |
 |---|---|---|
 | `clap` (derive) | The CLI's parsing and help. | yes |
-| `tokio` | `rmcp` and `reqwest` are async; one runtime for both. | not yet |
-| `reqwest` (rustls) | HTTP to the provider. | not yet |
-| `serde`, `serde_json` | Wire types, events. | yes |
+| `tokio` | `rmcp` and `reqwest` are async; one runtime for both. | yes |
+| `reqwest` (rustls) | HTTP to the provider. | yes |
+| `serde`, `serde_json` (`raw_value`) | Wire types, events; `raw_value` keeps a reported cost as the digits the server wrote. | yes |
 | `toml` | The profile. | not yet |
 | `rmcp` | MCP client. | not yet |
 | `ignore`, `grep-searcher` | The `list` and `search` tools, with ripgrep's ignore rules. | not yet |

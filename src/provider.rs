@@ -1,9 +1,12 @@
 //! The model provider, as the loop sees it. The HTTP client for
-//! OpenAI-compatible servers lives at the edge and fills these types.
+//! OpenAI-compatible servers, [`http`], lives at the edge and fills
+//! these types.
 
 use serde::Serialize;
 
 use crate::conversation::{Message, ToolCall, ToolSpec};
+
+pub mod http;
 
 // The loop is generic over its edges and never boxes them or sends them
 // across threads, so the futures need no `Send` bound.
