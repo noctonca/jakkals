@@ -241,7 +241,8 @@ fn the_shell_takes_the_documented_defaults() {
         profile.shell,
         Some(ShellSettings {
             allow: vec![vec!["git".to_owned(), "log".to_owned()]],
-            sandbox: Sandbox::Seatbelt,
+            // The system's own: seatbelt on macOS, landlock on Linux.
+            sandbox: Sandbox::native().expect("tests run where Jakkals has a sandbox"),
             sandbox_read: Vec::new(),
             timeout_s: 30,
         })
@@ -309,9 +310,9 @@ fn shell_settings_the_harness_cant_run_with_are_refused() {
             "{text:?}: invalid {field}, not {error:?}"
         );
     }
-    let error = invalid(&shell("sandbox = \"landlock\""));
+    let error = invalid(&shell("sandbox = \"container\""));
     assert!(
-        matches!(&error, ProfileError::Toml { detail } if detail.contains("unknown variant `landlock`")),
+        matches!(&error, ProfileError::Toml { detail } if detail.contains("unknown variant `container`")),
         "{error:?}"
     );
 }
