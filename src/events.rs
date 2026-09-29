@@ -41,6 +41,8 @@ pub enum Event {
         input_tokens: u32,
         output_tokens: u32,
         cached_tokens: Option<u32>,
+        /// Counted in `output_tokens`, not on top of them.
+        reasoning_tokens: Option<u32>,
         cost_nano_usd: Option<u64>,
         duration_ms: u64,
         finish_reason: Option<String>,

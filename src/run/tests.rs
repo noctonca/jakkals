@@ -113,10 +113,10 @@ fn the_event_stream_has_the_documented_shape() {
             r#"{{"type":"start","version":"{version}","profile_hash":"hash","model":"test/model","tools":["read"],"limits":{{"steps":10,"wall_s":60,"cost_nano_usd":null,"tokens":null,"context_tokens":null,"tool_output_bytes":1000}},"t_ms":0}}"#
         ),
         r#"{"type":"model_request","step":1,"messages":2,"t_ms":0}"#.to_owned(),
-        r#"{"type":"model_call","step":1,"generation_id":"gen-1","model":"test/model-served","provider":"TestCloud","input_tokens":100,"output_tokens":10,"cached_tokens":null,"cost_nano_usd":1500,"duration_ms":250,"finish_reason":"tool_calls","t_ms":250}"#.to_owned(),
+        r#"{"type":"model_call","step":1,"generation_id":"gen-1","model":"test/model-served","provider":"TestCloud","input_tokens":100,"output_tokens":10,"cached_tokens":null,"reasoning_tokens":null,"cost_nano_usd":1500,"duration_ms":250,"finish_reason":"tool_calls","t_ms":250}"#.to_owned(),
         r#"{"type":"tool_call","step":1,"tool":"read","arguments":"{}","status":"ok","result_bytes":5,"cut":false,"duration_ms":20,"t_ms":270}"#.to_owned(),
         r#"{"type":"model_request","step":2,"messages":4,"t_ms":270}"#.to_owned(),
-        r#"{"type":"model_call","step":2,"generation_id":null,"model":null,"provider":null,"input_tokens":130,"output_tokens":5,"cached_tokens":null,"cost_nano_usd":2000,"duration_ms":300,"finish_reason":"stop","t_ms":570}"#.to_owned(),
+        r#"{"type":"model_call","step":2,"generation_id":null,"model":null,"provider":null,"input_tokens":130,"output_tokens":5,"cached_tokens":null,"reasoning_tokens":null,"cost_nano_usd":2000,"duration_ms":300,"finish_reason":"stop","t_ms":570}"#.to_owned(),
         r#"{"type":"answer","text":"A cat.","t_ms":570}"#.to_owned(),
         r#"{"type":"exit","reason":"done","totals":{"steps":2,"tool_calls":1,"input_tokens":230,"output_tokens":15,"cost_nano_usd":3500},"t_ms":570}"#.to_owned(),
     ];

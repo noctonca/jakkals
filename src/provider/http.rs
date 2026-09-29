@@ -258,6 +258,9 @@ fn parse_reply(body: &[u8]) -> Result<Reply, ProviderError> {
             cached_tokens: usage
                 .prompt_tokens_details
                 .and_then(|details| details.cached_tokens),
+            reasoning_tokens: usage
+                .completion_tokens_details
+                .and_then(|details| details.reasoning_tokens),
             cost_nano_usd,
         },
         generation_id: wire.id,
@@ -400,6 +403,7 @@ struct WireUsage {
     prompt_tokens: u32,
     completion_tokens: u32,
     prompt_tokens_details: Option<WirePromptDetails>,
+    completion_tokens_details: Option<WireCompletionDetails>,
     /// US dollars, kept as the literal the server wrote.
     cost: Option<Box<RawValue>>,
 }
@@ -407,6 +411,11 @@ struct WireUsage {
 #[derive(Deserialize)]
 struct WirePromptDetails {
     cached_tokens: Option<u32>,
+}
+
+#[derive(Deserialize)]
+struct WireCompletionDetails {
+    reasoning_tokens: Option<u32>,
 }
 
 #[cfg(test)]

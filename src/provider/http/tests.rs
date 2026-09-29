@@ -283,7 +283,7 @@ async fn openrouter_reply_keeps_cost_provider_and_generation() {
             "total_tokens": 1230,
             "cost": 0.000123456,
             "prompt_tokens_details": {"cached_tokens": 1024},
-            "completion_tokens_details": {"reasoning_tokens": 0}
+            "completion_tokens_details": {"reasoning_tokens": 18}
         }
     });
     let (address, _seen) = serve(vec![ok(&reply)]);
@@ -312,6 +312,7 @@ async fn openrouter_reply_keeps_cost_provider_and_generation() {
                 prompt_tokens: 1200,
                 completion_tokens: 30,
                 cached_tokens: Some(1024),
+                reasoning_tokens: Some(18),
                 cost_nano_usd: Some(123_456),
             },
             generation_id: Some("gen-1".to_owned()),
@@ -334,6 +335,7 @@ async fn local_reply_without_cost_is_none_not_zero() {
     assert!(reply.tool_calls.is_empty());
     assert_eq!(reply.usage.cost_nano_usd, None);
     assert_eq!(reply.usage.cached_tokens, None);
+    assert_eq!(reply.usage.reasoning_tokens, None);
     assert_eq!(reply.provider, None);
     assert_eq!(reply.generation_id.as_deref(), Some("chatcmpl-1"));
 }

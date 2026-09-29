@@ -124,7 +124,7 @@ after it.
 |---|---|
 | `start` | Jakkals version, profile hash, model, tool names, and the limits in force. |
 | `model_request` | Step, number of messages sent. Written as the request leaves, so a slow call shows as in flight and a run killed mid-call shows which call it died in. |
-| `model_call` | The reply to a `model_request`: step, generation id, model and provider that served it, input/output/cached tokens, cost, duration, finish reason. |
+| `model_call` | The reply to a `model_request`: step, generation id, model and provider that served it, input/output/cached tokens, reasoning tokens (part of the output tokens, where reported), cost, duration, finish reason. |
 | `tool_call` | Step, tool, arguments as the model wrote them, `status` (`ok`, `failed`, `refused`), the result's size before any cut, whether it was cut, duration. |
 | `answer` | The final text. |
 | `exit` | Why the run ended, as `reason`: `done`; `limit` with `which`; or `error` with a typed `error` (`{"kind":"provider","provider_error":"status","status":429,…}`, `{"kind":"cost_unreported"}`). And the totals: steps, tool calls, input and output tokens, cost. |
@@ -253,10 +253,11 @@ timeout, covering connecting, sending and reading the whole reply.
 | A 2xx that isn't one completion: not JSON, an error object, no or several choices, no usage, a cost that isn't a number, a body past 16 MiB | `malformed`, with what was wrong. |
 
 From a reply Jakkals keeps the text, the tool calls, the usage (with
-cached tokens where reported), `usage.cost`, the `id` (OpenRouter's
-generation id), the model and provider that served it, and the finish
-reason. Other fields are dropped; a reasoning model's reasoning text
-among them, so it is not sent back on the next call. The cost is read
+cached and reasoning tokens where reported), `usage.cost`, the `id`
+(OpenRouter's generation id), the model and provider that served it,
+and the finish reason. Other fields are dropped; a reasoning model's
+reasoning text among them, so it is not sent back on the next call,
+and its reasoning token count is its only trace. The cost is read
 from the number's decimal digits, never through a float, and rounded
 to the nearest nano-dollar. A server that reports cost only when asked
 is asked through `provider.params`.
