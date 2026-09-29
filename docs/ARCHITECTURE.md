@@ -96,8 +96,8 @@ is refused too, so a profile never claims what a run won't do.
 | `provider.params` | Temperature, max tokens and the like, passed through as given. May not set `model`, `messages`, `tools` or `stream`. | none |
 | `tools.local` | The local tools offered, by name: `read`, `list`, `search`, `shell`. Offered in that order whatever the order written; a name twice is refused. See [The local tools](#the-local-tools) and [The shell tool](#the-shell-tool). | none |
 | `tools.shell_allow` | The commands `shell` may run, each as its leading words (`git log`). Required when `shell` is offered. | none |
-| `tools.sandbox` | How shell commands are confined: `seatbelt` (macOS), `landlock` (Linux) or `none`, which must be written out. | the system's own: `seatbelt` on macOS, `landlock` on Linux |
-| `tools.sandbox_read` | Absolute paths the sandbox also lets commands read, for programs and their libraries installed outside the system's own paths (a package manager's prefix). | none |
+| `tools.sandbox` | How shell commands are confined: `seatbelt` (macOS), `landlock` (Linux) or `none`, which must be written out. | the system's own: `seatbelt` on macOS, `landlock` on Linux on x86_64 or aarch64; elsewhere none, and a profile offering `shell` must write `none` |
+| `tools.sandbox_read` | Absolute paths, without `..`, the sandbox also lets commands read, for programs and their libraries installed outside the system's own paths (a package manager's prefix). Refused with `none`, which confines nothing. | none |
 | `tools.shell_timeout_s` | Seconds a shell command may run before it is killed. | 30 |
 | `mcp.<name>.url` | An MCP server's streamable HTTP endpoint. `<name>` is 1 to 16 of `a-z`, `0-9` and `-`, and prefixes its tools' names. See [MCP servers](#mcp-servers). | required |
 | `mcp.<name>.tools` | The server's tools offered, by the server's names, in the order written; a name twice is refused. | required |
@@ -222,7 +222,10 @@ A reasoning model's reasoning text is left out unless
 be long, and it is not part of what the model is sent, so it is
 opt-in. Where the provider returns no reasoning text (some hide it),
 the line says `null` and the `model_call` event's `reasoning_tokens`
-remains its only trace.
+remains its only trace. Some providers return it only when asked:
+OpenRouter's models may not reason at all unless the profile asks,
+as in `provider.params` `reasoning = { effort = "low" }`. That changes
+the run, so it belongs in the profile, not on the command line.
 
 A transcript holds everything the model saw: file contents, command
 output, MCP results. So the file is created new, readable and
@@ -382,8 +385,11 @@ or Rust's under `~/.cargo`, can't even start until its prefix is in
 run before it starts.
 
 Under `seatbelt` the system's directories are `/bin`, `/sbin`, `/usr`,
-`/System`, the loader's cache and the time zones; a denial reads
-`Operation not permitted`. Other processes can't be signalled.
+`/System`, `/Library/Apple`, the loader's cache and the time zones; a
+denial reads `Operation not permitted`. Other processes can't be
+signalled. Some of `/usr/bin`'s programs are stubs that start the real
+one elsewhere: Apple's `git` needs the Command Line Tools'
+folder, `/Library/Developer/CommandLineTools`, in `tools.sandbox_read`.
 
 Under `landlock` they are `/bin`, `/sbin`, the `/lib` directories,
 `/usr`, the loader's cache and configuration and `/etc/localtime`, plus
@@ -539,7 +545,7 @@ the transcript, when the run records it (see
 [The transcript](#the-transcript)), and otherwise its token count is
 its only trace. The cost is read
 from the number's decimal digits, never through a float, and rounded
-to the nearest nano-dollar. A server that reports cost only when asked
+to the nearest nano-dollar, halves up. A server that reports cost only when asked
 is asked through `provider.params`.
 
 ## The dependency register

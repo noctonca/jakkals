@@ -136,6 +136,9 @@ Keep them clean:
 Conventional Commits, CI-enforced on PR titles: `feat`, `fix`, `perf`,
 `refactor`, `docs`, `test`, `build`, `ci`, `chore`. Commit messages and
 PR bodies explain *why* — the constraint hit, the alternative rejected.
+Each PR has its own branch off `main`. Avoid stacking one PR on
+another's branch: if the first merges without its branch being
+deleted, GitHub merges the second into that branch, not `main`.
 Keep PRs to one topic; resist "while I'm here" cleanups, and open an
 issue before anything sweeping. When CI fails, fix the cause.
 
