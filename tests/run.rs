@@ -1,5 +1,5 @@
-//! `jakkals run` end to end: the built binary, a profile on disk and a
-//! fake provider on 127.0.0.1. Checks the exit status, the event lines
+//! `jakkals run` and `jakkals check` end to end: the built binary, a
+//! profile on disk and a fake provider on 127.0.0.1. Checks the exit status, the event lines
 //! on stdout and what goes to stderr. No network beyond the loopback.
 
 use std::ffi::OsString;
@@ -120,11 +120,7 @@ fn run_with(
 ) -> Ran {
     let profile_path = dir.0.join("profile.toml");
     std::fs::write(&profile_path, profile).expect("profile is writable");
-    let Output {
-        status,
-        stdout,
-        stderr,
-    } = Command::new(env!("CARGO_BIN_EXE_jakkals"))
+    ran(Command::new(env!("CARGO_BIN_EXE_jakkals"))
         .args([
             "run",
             "--model",
@@ -138,9 +134,33 @@ fn run_with(
         .arg(cwd)
         .args(extra)
         .env_remove("JAKKALS_TEST_KEY")
-        .envs(env.iter().copied())
-        .output()
-        .expect("jakkals runs");
+        .envs(env.iter().copied()))
+}
+
+/// `jakkals check` on `profile`, with `--connect` when `connect`.
+fn check(dir: &TempDir, profile: &str, env: &[(&str, &str)], connect: bool) -> Ran {
+    let profile_path = dir.0.join("profile.toml");
+    std::fs::write(&profile_path, profile).expect("profile is writable");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_jakkals"));
+    command
+        .arg("check")
+        .arg("--profile")
+        .arg(&profile_path)
+        .env_remove("JAKKALS_TEST_KEY")
+        .envs(env.iter().copied());
+    if connect {
+        command.arg("--connect");
+    }
+    ran(&mut command)
+}
+
+/// Runs `command` to its end: its status, stdout's JSON lines, stderr.
+fn ran(command: &mut Command) -> Ran {
+    let Output {
+        status,
+        stdout,
+        stderr,
+    } = command.output().expect("jakkals runs");
     let events = String::from_utf8(stdout)
         .expect("stdout is UTF-8")
         .lines()
@@ -596,4 +616,109 @@ fn an_mcp_tool_is_offered_recorded_and_called() {
     assert_eq!(call["tool"], "memory_recall");
     assert_eq!(call["status"], "ok");
     assert_eq!(call["result_bytes"], 6);
+}
+
+/// A sandbox this system can't give, so its check fails.
+const MISSING_SANDBOX: &str = if cfg!(target_os = "macos") {
+    "landlock"
+} else {
+    "seatbelt"
+};
+
+#[test]
+fn a_check_passes_a_valid_profile_with_nothing_on_stdout_and_needs_no_key() {
+    let dir = TempDir::new("check");
+    // Nothing listens here, and the key variables are unset: neither is
+    // reached without --connect.
+    let address: SocketAddr = "127.0.0.1:9".parse().expect("an address");
+    let text = format!(
+        "{}[tools]\nlocal = [\"read\", \"shell\"]\nshell_allow = [\"echo\"]\nsandbox = \"none\"\n\n\
+         [mcp.memory]\nurl = \"http://127.0.0.1:9/mcp\"\ntools = [\"recall\"]\n\
+         key_env = \"JAKKALS_TEST_MCP_KEY\"\n",
+        profile(address, 5)
+    );
+    let ran = check(&dir, &text, &[], false);
+
+    assert_eq!(ran.status, 0, "stderr: {}", ran.stderr);
+    assert!(ran.events.is_empty());
+    assert!(ran.stderr.is_empty(), "{:?}", ran.stderr);
+
+    let ran = check(&dir, &text, &[], true);
+    assert_eq!(ran.status, 2);
+    assert!(ran.events.is_empty());
+    assert!(ran.stderr.contains("key_env"), "{:?}", ran.stderr);
+}
+
+#[test]
+fn a_check_exits_2_on_what_would_stop_a_run() {
+    let dir = TempDir::new("check-faults");
+    let address: SocketAddr = "127.0.0.1:9".parse().expect("an address");
+    let missing = dir.0.join("no-such-directory");
+    let cases = [
+        ("[limits]\nsteps = 5\n".to_owned(), "wall_s"),
+        (
+            format!(
+                "{}[tools]\nlocal = [\"shell\"]\nshell_allow = [\"echo\"]\n\
+                 sandbox = \"{MISSING_SANDBOX}\"\n",
+                profile(address, 5)
+            ),
+            "tools.sandbox",
+        ),
+        (
+            format!(
+                "{}[tools]\nlocal = [\"shell\"]\nshell_allow = [\"echo\"]\n\
+                 sandbox_read = [\"{}\"]\n",
+                profile(address, 5),
+                missing.display()
+            ),
+            "tools.sandbox_read",
+        ),
+    ];
+    for (text, named) in cases {
+        let ran = check(&dir, &text, &[], false);
+        assert_eq!(ran.status, 2, "{text:?}: stderr: {}", ran.stderr);
+        assert!(ran.events.is_empty(), "{text:?}: nothing on stdout");
+        assert!(
+            ran.stderr.contains(named),
+            "{text:?}: {:?} names {named}",
+            ran.stderr
+        );
+    }
+}
+
+#[test]
+fn a_connected_check_writes_each_servers_line_and_calls_no_model() {
+    let dir = TempDir::new("check-connect");
+    let mcp = serve_mcp();
+    // Nothing listens here: a check that called the model would fail.
+    let address: SocketAddr = "127.0.0.1:9".parse().expect("an address");
+    let text = format!(
+        "{}\n[mcp.memory]\nurl = \"http://{mcp}/mcp\"\ntools = [\"recall\"]\n",
+        profile(address, 5)
+    );
+    let ran = check(&dir, &text, &KEY, true);
+
+    assert_eq!(ran.status, 0, "stderr: {}", ran.stderr);
+    assert_eq!(types(&ran.events), ["mcp_server"]);
+    let server = &ran.events[0];
+    assert_eq!(server["server"], "memory");
+    assert_eq!(server["server_name"], "fake-memory");
+    assert_eq!(
+        server["tools"],
+        json!([{
+            "name": "memory_recall",
+            "description": "Recall a note.",
+            "parameters": {"type": "object"}
+        }])
+    );
+    assert!(server["t_ms"].is_u64());
+
+    let text = format!(
+        "{}\n[mcp.memory]\nurl = \"http://{mcp}/mcp\"\ntools = [\"recall\", \"forget\"]\n",
+        profile(address, 5)
+    );
+    let ran = check(&dir, &text, &KEY, true);
+    assert_eq!(ran.status, 2);
+    assert!(ran.events.is_empty());
+    assert!(ran.stderr.contains("forget"), "{:?}", ran.stderr);
 }

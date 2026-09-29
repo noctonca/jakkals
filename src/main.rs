@@ -8,23 +8,25 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use clap::{Parser, Subcommand};
 
 use jakkals::build_info;
-use jakkals::clock::MonotonicClock;
-use jakkals::events::{JsonLines, Outcome};
+use jakkals::clock::{Clock, MonotonicClock};
+use jakkals::events::{Event, JsonLines, Outcome, Record, Sink};
 use jakkals::profile::{self, Profile};
 use jakkals::provider::http::HttpProvider;
 use jakkals::run::{Task, run};
 use jakkals::tools::Toolbox;
 use jakkals::tools::local::LocalTools;
 use jakkals::tools::mcp::McpServer;
+use jakkals::tools::shell;
 use jakkals::transcript::{self, JsonLinesTranscript};
 
 /// The process's exit status, one per way a run can end, so a caller
 /// can branch without reading the events. Documented in ARCHITECTURE.md.
+/// A check that passes exits with it too.
 const EXIT_DONE: u8 = 0;
 /// The run never started: a bad profile, key or directory, a transcript
 /// file that couldn't be created, or an MCP server that couldn't be set
-/// up. clap uses the same status for bad
-/// arguments. No events are written.
+/// up; for a check, the first of these it found. clap uses the same
+/// status for bad arguments. No events are written.
 const EXIT_SETUP: u8 = 2;
 const EXIT_LIMIT: u8 = 3;
 const EXIT_ERROR: u8 = 4;
@@ -62,6 +64,17 @@ enum Command {
         #[arg(long, requires = "transcript")]
         transcript_reasoning: bool,
     },
+    /// Check a profile without calling a model: the file and this
+    /// system's sandbox. Exits 0 when it passes, 2 with the reason.
+    Check {
+        /// The profile to check.
+        #[arg(long)]
+        profile: PathBuf,
+        /// Also read the key variables and set up each MCP server, writing
+        /// one mcp_server line per server to stdout.
+        #[arg(long)]
+        connect: bool,
+    },
 }
 
 /// A transcript the run was asked for.
@@ -95,13 +108,42 @@ async fn main() -> ExitCode {
                     Outcome::Limit { .. } => EXIT_LIMIT,
                     Outcome::Error { .. } => EXIT_ERROR,
                 }),
-                Err(message) => {
-                    eprintln!("jakkals: {message}");
-                    ExitCode::from(EXIT_SETUP)
-                }
+                Err(message) => setup_failed(&message),
             }
         }
+        Command::Check { profile, connect } => match check(&profile, connect).await {
+            Ok(()) => ExitCode::from(EXIT_DONE),
+            Err(message) => setup_failed(&message),
+        },
     }
+}
+
+fn setup_failed(message: &str) -> ExitCode {
+    eprintln!("jakkals: {message}");
+    ExitCode::from(EXIT_SETUP)
+}
+
+/// Checks what [`start`] would before its first event, save the
+/// working directory and the transcript. The key variables and the MCP
+/// servers only with `connect`, since they depend on the environment.
+async fn check(profile: &Path, connect: bool) -> Result<(), String> {
+    let clock = MonotonicClock::start();
+    let profile = Profile::read(profile).map_err(|error| error.to_string())?;
+    if let Some(settings) = &profile.shell {
+        shell::check_sandbox(settings).map_err(|error| error.to_string())?;
+    }
+    if !connect {
+        return Ok(());
+    }
+    let (_, servers) = set_up_remote(&profile).await?;
+    let mut sink = JsonLines::new(std::io::stdout().lock());
+    for server in &servers {
+        sink.emit(Record {
+            event: Event::McpServer(server.record().clone()),
+            t_ms: clock.now_ms(),
+        });
+    }
+    Ok(())
 }
 
 /// Everything a run needs is checked before its first event, so a run
@@ -124,27 +166,7 @@ async fn start(
         std::env::var_os("PATH"),
     )
     .map_err(|error| error.to_string())?;
-    // Every key is read before any server is reached, so a missing one
-    // costs no connection.
-    let keys = profile
-        .mcp
-        .iter()
-        .map(|server| profile::mcp_key(server, |variable| std::env::var(variable).ok()))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| error.to_string())?;
-    let config = profile
-        .http_config(|variable| std::env::var(variable).ok())
-        .map_err(|error| error.to_string())?;
-    let mut provider =
-        HttpProvider::new(config).map_err(|error| format!("the provider: {error}"))?;
-    let mut servers = Vec::with_capacity(profile.mcp.len());
-    for (settings, key) in profile.mcp.iter().zip(&keys) {
-        servers.push(
-            McpServer::connect(settings, key.as_deref())
-                .await
-                .map_err(|error| error.to_string())?,
-        );
-    }
+    let (mut provider, servers) = set_up_remote(&profile).await?;
     let mut tools = Toolbox::new(local, servers);
     // Created last, so a run that fails setup leaves no empty file whose
     // path the next attempt would be refused.
@@ -180,6 +202,32 @@ async fn start(
         &mut transcript,
     )
     .await)
+}
+
+/// The setup that depends on the environment: the key variables, the
+/// provider and each MCP server, connected.
+async fn set_up_remote(profile: &Profile) -> Result<(HttpProvider, Vec<McpServer>), String> {
+    // Every key is read before any server is reached, so a missing one
+    // costs no connection.
+    let keys = profile
+        .mcp
+        .iter()
+        .map(|server| profile::mcp_key(server, |variable| std::env::var(variable).ok()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    let config = profile
+        .http_config(|variable| std::env::var(variable).ok())
+        .map_err(|error| error.to_string())?;
+    let provider = HttpProvider::new(config).map_err(|error| format!("the provider: {error}"))?;
+    let mut servers = Vec::with_capacity(profile.mcp.len());
+    for (settings, key) in profile.mcp.iter().zip(&keys) {
+        servers.push(
+            McpServer::connect(settings, key.as_deref())
+                .await
+                .map_err(|error| error.to_string())?,
+        );
+    }
+    Ok((provider, servers))
 }
 
 /// The transcript's absolute path: the one given, or a new name in the

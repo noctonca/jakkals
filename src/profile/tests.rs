@@ -75,6 +75,10 @@ shell_allow = ["git log", "rg", "'cargo' tree"]
 sandbox = "seatbelt"
 sandbox_read = ["/opt/homebrew"]
 shell_timeout_s = 10
+
+[tools.shell_env]
+HOME = "/tmp/empty-home"
+CARGO_HOME = "/opt/cargo"
 "#;
     let profile = Profile::parse(text).expect("the profile is valid");
 
@@ -122,6 +126,10 @@ shell_timeout_s = 10
             sandbox: Sandbox::Seatbelt,
             sandbox_read: vec!["/opt/homebrew".into()],
             timeout_s: 10,
+            env: vec![
+                ("CARGO_HOME".to_owned(), "/opt/cargo".to_owned()),
+                ("HOME".to_owned(), "/tmp/empty-home".to_owned()),
+            ],
         })
     );
 }
@@ -218,6 +226,26 @@ fn values_the_harness_cant_run_with_are_refused() {
             &format!("{MINIMAL}[tools]\nlocal = [\"read\", \"list\", \"read\"]\n"),
             "tools.local",
         ),
+        (
+            &format!("{MINIMAL}[tools]\nlocal = [\"read\"]\n[tools.shell_env]\nHOME = \"/x\"\n"),
+            "tools.shell_env",
+        ),
+        (
+            &format!("{MINIMAL}{SHELL}[tools.shell_env]\n\"1HOME\" = \"/x\"\n"),
+            "tools.shell_env",
+        ),
+        (
+            &format!("{MINIMAL}{SHELL}[tools.shell_env]\n\"A=B\" = \"/x\"\n"),
+            "tools.shell_env",
+        ),
+        (
+            &format!("{MINIMAL}{SHELL}[tools.shell_env]\n\"\" = \"/x\"\n"),
+            "tools.shell_env",
+        ),
+        (
+            &format!("{MINIMAL}{SHELL}[tools.shell_env]\nHOME = \"/x\\u0000y\"\n"),
+            "tools.shell_env",
+        ),
     ];
     for (text, field) in cases {
         let error = invalid(text);
@@ -226,6 +254,15 @@ fn values_the_harness_cant_run_with_are_refused() {
             "{text:?}: invalid {field}, not {error:?}"
         );
     }
+}
+
+/// A shell that runs anywhere, for cases about the shell's other fields.
+const SHELL: &str = "[tools]\nlocal = [\"shell\"]\nshell_allow = [\"env\"]\nsandbox = \"none\"\n";
+
+#[test]
+fn shell_env_is_empty_unless_written() {
+    let profile = Profile::parse(&format!("{MINIMAL}{SHELL}")).expect("the profile is valid");
+    assert_eq!(profile.shell.expect("the shell is offered").env, []);
 }
 
 const NOTES: &str = "[mcp.notes]\nurl = \"https://notes.example/mcp\"\ntools = [\"search\"]\n";

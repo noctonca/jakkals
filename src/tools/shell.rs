@@ -95,6 +95,9 @@ pub struct ShellSettings {
     /// Absolute paths the sandbox also lets commands read.
     pub sandbox_read: Vec<PathBuf>,
     pub timeout_s: u32,
+    /// Variables commands get besides `PATH`, ordered by name; a `PATH`
+    /// here replaces Jakkals's own.
+    pub env: Vec<(String, String)>,
 }
 
 /// Why a command's text can't be run as words.
@@ -185,11 +188,48 @@ impl fmt::Display for ShellSetupError {
 
 impl std::error::Error for ShellSetupError {}
 
+/// Checks, without a working directory, that this system can give
+/// commands the sandbox `settings` ask for, with its read paths: what
+/// [`Shell::new`] would refuse, short of the directory itself.
+pub fn check_sandbox(settings: &ShellSettings) -> Result<(), ShellSetupError> {
+    let read = sandbox_read(settings)?;
+    match settings.sandbox {
+        Sandbox::None => {}
+        Sandbox::Seatbelt => {
+            if !cfg!(target_os = "macos") {
+                return Err(ShellSetupError::SeatbeltNeedsMacos);
+            }
+        }
+        // Built in full and dropped: the kernel's answer is the check.
+        Sandbox::Landlock => {
+            landlock_confinement(None, &read)?;
+        }
+    }
+    Ok(())
+}
+
+/// `tools.sandbox_read`, resolved: a sandbox matches the path a file
+/// really has, so a symlinked prefix is allowed where it leads.
+fn sandbox_read(settings: &ShellSettings) -> Result<Vec<PathBuf>, ShellSetupError> {
+    let mut read = Vec::with_capacity(settings.sandbox_read.len());
+    for path in &settings.sandbox_read {
+        read.push(
+            path.canonicalize()
+                .map_err(|error| ShellSetupError::SandboxRead {
+                    path: path.clone(),
+                    error,
+                })?,
+        );
+    }
+    Ok(read)
+}
+
 /// The shell, set up for one run.
 pub struct Shell {
     root: PathBuf,
     settings: ShellSettings,
-    /// `PATH` for commands: Jakkals's own, the only variable passed.
+    /// `PATH` for commands: Jakkals's own, the only variable passed
+    /// from its environment.
     path_env: Option<OsString>,
     confinement: Confinement,
 }
@@ -225,18 +265,7 @@ impl Shell {
             settings.timeout_s > 0,
             "the profile requires a positive timeout"
         );
-        // A sandbox matches the path a file really has, so a symlinked
-        // prefix is allowed where it leads.
-        let mut read = Vec::with_capacity(settings.sandbox_read.len());
-        for path in &settings.sandbox_read {
-            read.push(
-                path.canonicalize()
-                    .map_err(|error| ShellSetupError::SandboxRead {
-                        path: path.clone(),
-                        error,
-                    })?,
-            );
-        }
+        let read = sandbox_read(settings)?;
         let confinement = match settings.sandbox {
             Sandbox::None => Confinement::None,
             Sandbox::Seatbelt => {
@@ -249,7 +278,7 @@ impl Shell {
                     parameters,
                 }
             }
-            Sandbox::Landlock => landlock_confinement(root, &read)?,
+            Sandbox::Landlock => landlock_confinement(Some(root), &read)?,
         };
         Ok(Self {
             root: root.to_owned(),
@@ -403,6 +432,7 @@ impl Shell {
         if let Some(path) = &self.path_env {
             command.env("PATH", path);
         }
+        command.envs(self.settings.env.iter().map(|(name, value)| (name, value)));
         command
     }
 }
@@ -433,7 +463,10 @@ fn seatbelt(root: &Path, read: &[PathBuf]) -> (String, Vec<OsString>) {
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
-fn landlock_confinement(root: &Path, read: &[PathBuf]) -> Result<Confinement, ShellSetupError> {
+fn landlock_confinement(
+    root: Option<&Path>,
+    read: &[PathBuf],
+) -> Result<Confinement, ShellSetupError> {
     landlock::Landlock::new(root, read)
         .map(Confinement::Landlock)
         .map_err(ShellSetupError::Landlock)
@@ -443,7 +476,10 @@ fn landlock_confinement(root: &Path, read: &[PathBuf]) -> Result<Confinement, Sh
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
 )))]
-fn landlock_confinement(_root: &Path, _read: &[PathBuf]) -> Result<Confinement, ShellSetupError> {
+fn landlock_confinement(
+    _root: Option<&Path>,
+    _read: &[PathBuf],
+) -> Result<Confinement, ShellSetupError> {
     Err(ShellSetupError::LandlockNeedsLinux)
 }
 

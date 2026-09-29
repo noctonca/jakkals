@@ -123,8 +123,9 @@ pub struct Landlock {
 }
 
 impl Landlock {
-    /// Allows reading `root`, `read` and the system's paths.
-    pub fn new(root: &Path, read: &[PathBuf]) -> Result<Self, LandlockError> {
+    /// Allows reading `root`, `read` and the system's paths. Without a
+    /// `root`, it only shows that the sandbox can be built.
+    pub fn new(root: Option<&Path>, read: &[PathBuf]) -> Result<Self, LandlockError> {
         let abi = abi();
         if abi < ABI_REQUIRED {
             return Err(LandlockError::Abi(abi.max(0)));
@@ -149,7 +150,7 @@ impl Landlock {
         // SAFETY: `fd` was just returned to us and nothing else owns it.
         let ruleset = unsafe { OwnedFd::from_raw_fd(fd) };
 
-        for path in [root].into_iter().chain(read.iter().map(PathBuf::as_path)) {
+        for path in root.into_iter().chain(read.iter().map(PathBuf::as_path)) {
             allow(&ruleset, path, ACCESS_READ)?;
         }
         for path in SYSTEM_READ {
