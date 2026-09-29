@@ -203,6 +203,23 @@ fn a_call_to_a_tool_not_offered_is_refused_and_the_run_goes_on() {
 }
 
 #[test]
+fn a_local_tool_runs_in_the_working_directory() {
+    let dir = TempDir::new("local");
+    std::fs::write(dir.0.join("box.txt"), "a cat\n").expect("file is writable");
+    let address = serve(vec![(200, tool_call("list")), (200, answer("A cat."))]);
+    let text = format!("{}[tools]\nlocal = [\"list\"]\n", profile(address, 5));
+    let ran = run(&dir, &text, &KEY);
+
+    assert_eq!(ran.status, 0, "stderr: {}", ran.stderr);
+    assert_eq!(ran.events[0]["tools"], json!(["list"]));
+    let tool_call = &ran.events[3];
+    assert_eq!(tool_call["tool"], "list");
+    assert_eq!(tool_call["status"], "ok");
+    // The profile and the box: the listing the model got back.
+    assert_eq!(tool_call["result_bytes"], "box.txt\nprofile.toml\n".len());
+}
+
+#[test]
 fn a_limit_ends_the_run_with_status_3() {
     let dir = TempDir::new("limit");
     let address = serve(vec![(200, tool_call("read"))]);
@@ -243,9 +260,9 @@ fn setup_faults_exit_2_with_no_events() {
         ),
         ("[limits]\nsteps = 5\n".to_owned(), KEY.to_vec(), "wall_s"),
         (
-            format!("{}[tools]\nlocal = [\"read\"]\n", profile(address, 5)),
+            format!("{}[tools]\nlocal = [\"shell\"]\n", profile(address, 5)),
             KEY.to_vec(),
-            "tools",
+            "shell",
         ),
     ];
     for (text, env, named) in cases {

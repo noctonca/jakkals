@@ -1,9 +1,9 @@
 # Architecture
 
 Status: **draft**. The fixed decisions below are settled, and so are
-the profile fields Jakkals reads today. The fields of capabilities not
-built yet (tools, MCP) and the event shapes are a first proposal, to be
-settled by the code that reads or writes them.
+the profile fields Jakkals reads today and the local tools. The fields
+of capabilities not built yet (the shell, MCP) and the event shapes are
+a first proposal, to be settled by the code that reads or writes them.
 
 ## What Jakkals is
 
@@ -79,10 +79,11 @@ must be positive. Every other field has a documented default.
 
 A field the profile doesn't know is refused, not ignored, so a
 misspelt limit is an error rather than a run without it; only
-`provider.params` is open. The `tools` and `mcp` tables are refused
-until the capability they configure is built, so a profile never
-claims what a run won't do; their rows below are the design, settled
-by the change that builds each.
+`provider.params` is open. A field for a capability not built yet
+(`shell` in `tools.local`, `tools.shell_allow`, `tools.sandbox`, the
+`mcp` table) is refused, so a profile never claims what a run won't
+do; those rows below are the design, settled by the change that builds
+each.
 
 | Field | What it sets | Default |
 |---|---|---|
@@ -96,7 +97,7 @@ by the change that builds each.
 | `provider.base_url` | The API root of any OpenAI-compatible server. See [The provider](#the-provider). | `https://openrouter.ai/api/v1` |
 | `provider.api_key_env` | The environment variable holding the key, sent as a bearer token. Unset sends no key (a local server); set but empty in the environment ends the run before it starts. | unset |
 | `provider.params` | Temperature, max tokens and the like, passed through as given. May not set `model`, `messages`, `tools` or `stream`. | none |
-| `tools.local` | Not built. Which local tools exist: `read`, `list`, `search`, `shell`. | |
+| `tools.local` | The local tools offered, by name: `read`, `list`, `search`. Offered in that order whatever the order written; a name twice is refused. `shell` is not built yet. See [The local tools](#the-local-tools). | none |
 | `tools.shell_allow` | Not built. The shell's allowlist, as leading whole words (`git log`). See [The shell tool](#the-shell-tool). | |
 | `tools.sandbox` | Not built. How shell commands are confined: `seatbelt` (macOS) by default; `none` must be written out. | |
 | `mcp.<name>` | Not built. An MCP server: `url`, and the environment variable holding its key; optional tool allow or deny list. | |
@@ -184,6 +185,45 @@ never by matching the message.
 A declared trimming or compaction rule may become a profile option
 later, off by default, with an event each time it acts. It is not
 designed yet.
+
+## The local tools
+
+[`src/tools/local.rs`](../src/tools/local.rs). Each tool works on paths
+relative to `--cwd`, which is resolved once, symlinks and all, before
+the run starts. A path is refused before anything is read when it is
+absolute or holds `..`, and after resolving when it leads outside the
+directory through a symlink. A refusal is a `refused` tool call; a
+missing file, bad arguments or unreadable text are `failed`. Either
+way the reason goes back to the model.
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `read` | `path`; optional `start_line` (from 1) and `line_count` | The file's text, or those lines of it. |
+| `list` | optional `path` (default the whole directory) and `depth` (1 is the directory's own entries) | One path per line, relative to `--cwd`, sorted; directories end in `/` and symlinks in `@`. |
+| `search` | `pattern`, a regular expression in Rust's `regex` syntax; optional `path` | `path:line:text` for each matching line. |
+
+`list` and `search` walk the path they are given, skipping hidden
+entries and what the `.gitignore` and `.ignore` files in it and below
+ignore, as ripgrep does, in a git repository or not. Ignore files above
+that path and git's global ones are not read, so what a tool sees
+doesn't depend on the machine or on where `--cwd` sits; a path named
+outright is walked even when hidden. They don't follow symlinks, and
+`search` skips binary files (any holding a NUL byte). An entry they
+can't read is skipped, and a line at the end says how many were.
+
+Each has a bound of its own, fixed by the Jakkals version, so a call
+stays cheap in time and memory even when `limits.tool_output_bytes`
+would cut its result anyway:
+
+| Bound | Value | When passed |
+|---|---|---|
+| `read`'s file size | 1 MiB | The call fails, naming the size; `search` reads any size. |
+| `list`'s entries | 1,000 | The list stops, with a line saying so. |
+| `search`'s hits | 200 | The search stops, with a line saying so. |
+| `search`'s line length | 500 bytes shown, 1 MiB searched | A longer hit is shown cut, marked `…`; a file with a longer line is skipped. |
+
+A call that is still walking when the run's deadline passes stops and
+fails, and the run then ends on `wall_s`.
 
 ## The shell tool
 
@@ -274,6 +314,7 @@ Every dependency has a row here before it enters `Cargo.toml`.
 | `serde`, `serde_json` (`raw_value`) | Wire types, events; `raw_value` keeps a reported cost as the digits the server wrote. | yes |
 | `toml` | The profile. | yes |
 | `rmcp` | MCP client. | not yet |
-| `ignore`, `grep-searcher` | The `list` and `search` tools, with ripgrep's ignore rules. | not yet |
+| `ignore` | The `list` and `search` tools' walk, with ripgrep's ignore rules. | yes |
+| `grep-searcher`, `grep-regex` | The `search` tool: ripgrep's line searcher (binary detection, bounded line buffer) and its regex matcher. | yes |
 | `sha2` | The profile hash. | yes |
 | `shlex` | Splitting a shell command into words with the shell's quoting rules, without a shell. | not yet |

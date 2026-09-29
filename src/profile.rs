@@ -14,6 +14,7 @@ use toml::Spanned;
 use crate::money;
 use crate::provider::http::{self, HttpConfig, OPENROUTER_BASE_URL};
 use crate::run::Limits;
+use crate::tools::local::LocalTool;
 
 /// The largest profile read. A profile is a page of TOML and a system
 /// prompt; a file past this is not a profile.
@@ -30,6 +31,8 @@ pub struct Profile {
     pub system_prompt: String,
     pub limits: Limits,
     pub provider: ProviderSettings,
+    /// The local tools offered, in the order they are offered, each once.
+    pub local_tools: Vec<LocalTool>,
     /// `sha256:` and the hex digest of the file's bytes, so a run can be
     /// matched to its profile with standard tools.
     pub hash: String,
@@ -108,18 +111,17 @@ impl Profile {
         let file: File = toml::from_str(text).map_err(|error| ProfileError::Toml {
             detail: error.to_string(),
         })?;
-        if file.tools.is_some() {
-            return Err(ProfileError::NotBuilt { field: "tools" });
-        }
         if file.mcp.is_some() {
             return Err(ProfileError::NotBuilt { field: "mcp" });
         }
         let limits = limits(&file.limits, text)?;
         let provider = provider(file.provider)?;
+        let local_tools = local_tools(file.tools)?;
         Ok(Self {
             system_prompt: file.system_prompt,
             limits,
             provider,
+            local_tools,
             hash: hash(text.as_bytes()),
         })
     }
@@ -234,6 +236,43 @@ fn provider(file: FileProvider) -> Result<ProviderSettings, ProfileError> {
     })
 }
 
+fn local_tools(file: FileTools) -> Result<Vec<LocalTool>, ProfileError> {
+    if file.shell_allow.is_some() {
+        return Err(ProfileError::NotBuilt {
+            field: "tools.shell_allow",
+        });
+    }
+    if file.sandbox.is_some() {
+        return Err(ProfileError::NotBuilt {
+            field: "tools.sandbox",
+        });
+    }
+    let mut tools = Vec::with_capacity(file.local.len());
+    for name in file.local {
+        let tool = match name {
+            FileLocalTool::Read => LocalTool::Read,
+            FileLocalTool::List => LocalTool::List,
+            FileLocalTool::Search => LocalTool::Search,
+            FileLocalTool::Shell => {
+                return Err(ProfileError::NotBuilt {
+                    field: "tools.local \"shell\"",
+                });
+            }
+        };
+        if tools.contains(&tool) {
+            return Err(ProfileError::Invalid {
+                field: "tools.local",
+                problem: "names a tool twice",
+            });
+        }
+        tools.push(tool);
+    }
+    // Offered in a fixed order, so the order written doesn't change the
+    // prompt.
+    tools.sort();
+    Ok(tools)
+}
+
 fn hash(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     let mut hash = String::from("sha256:");
@@ -254,8 +293,28 @@ struct File {
     limits: FileLimits,
     #[serde(default)]
     provider: FileProvider,
-    tools: Option<toml::Value>,
+    #[serde(default)]
+    tools: FileTools,
     mcp: Option<toml::Value>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileTools {
+    #[serde(default)]
+    local: Vec<FileLocalTool>,
+    shell_allow: Option<toml::Value>,
+    sandbox: Option<toml::Value>,
+}
+
+/// A local tool's name as written; `shell` is known but not built.
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum FileLocalTool {
+    Read,
+    List,
+    Search,
+    Shell,
 }
 
 #[derive(Deserialize)]

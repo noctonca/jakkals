@@ -11,7 +11,7 @@ use jakkals::events::{JsonLines, Outcome};
 use jakkals::profile::Profile;
 use jakkals::provider::http::HttpProvider;
 use jakkals::run::{Task, run};
-use jakkals::tools::NoTools;
+use jakkals::tools::local::LocalTools;
 
 /// The process's exit status, one per way a run can end, so a caller
 /// can branch without reading the events. Documented in ARCHITECTURE.md.
@@ -77,11 +77,11 @@ async fn main() -> ExitCode {
 /// that starts has only the loop's ways to end.
 async fn start(profile: &Path, model: &str, cwd: &Path, prompt: &str) -> Result<Outcome, String> {
     let profile = Profile::read(profile).map_err(|error| error.to_string())?;
-    // No tool reads the directory yet, but a run named with one that
-    // doesn't exist is a mistake worth stopping on now.
     if !cwd.is_dir() {
         return Err(format!("--cwd {} is not a directory", cwd.display()));
     }
+    let mut tools = LocalTools::new(cwd, &profile.local_tools)
+        .map_err(|error| format!("--cwd {}: {error}", cwd.display()))?;
     let config = profile
         .http_config(|variable| std::env::var(variable).ok())
         .map_err(|error| error.to_string())?;
@@ -99,7 +99,7 @@ async fn start(profile: &Path, model: &str, cwd: &Path, prompt: &str) -> Result<
         &task,
         &profile.limits,
         &mut provider,
-        &mut NoTools,
+        &mut tools,
         &MonotonicClock::start(),
         &mut sink,
     )

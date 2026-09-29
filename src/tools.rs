@@ -5,6 +5,8 @@ use serde::Serialize;
 
 use crate::conversation::{ToolCall, ToolSpec};
 
+pub mod local;
+
 // See the note on `Provider`: generic only, no `Send` needed.
 #[allow(async_fn_in_trait)]
 pub trait Tools {
@@ -50,18 +52,4 @@ pub enum ToolStatus {
     Ok,
     Failed,
     Refused,
-}
-
-/// No tools: what a run has until local tools and MCP are built. The
-/// loop refuses any call before it reaches here.
-pub struct NoTools;
-
-impl Tools for NoTools {
-    fn specs(&self) -> &[ToolSpec] {
-        &[]
-    }
-
-    async fn call(&mut self, call: &ToolCall, _deadline_ms: u64) -> ToolOutcome {
-        unreachable!("the loop refuses `{}`: no tool is offered", call.name)
-    }
 }
