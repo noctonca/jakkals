@@ -186,7 +186,9 @@ A transcript holds everything the model saw: file contents, command
 output, MCP results. So the file is created new, readable and
 writable by its owner only (mode 600), and a path that already
 exists is refused, so no run writes over another's record or into a
-file someone else set up. Where it lives is the caller's choice. A
+file someone else set up. It is created last in setup, after the MCP
+servers are connected, so a run that fails setup leaves no empty file
+to block its retry. Where it lives is the caller's choice. A
 caller running several runs should keep their transcripts outside
 every run's `--cwd` and `tools.sandbox_read`, so a model can't read
 another run's.

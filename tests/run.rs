@@ -2,8 +2,10 @@
 //! fake provider on 127.0.0.1. Checks the exit status, the event lines
 //! on stdout and what goes to stderr. No network beyond the loopback.
 
+use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener};
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::thread;
@@ -105,6 +107,17 @@ struct Ran {
 }
 
 fn run_in(dir: &TempDir, cwd: &std::path::Path, profile: &str, env: &[(&str, &str)]) -> Ran {
+    run_with(dir, cwd, profile, env, &[])
+}
+
+/// A run with `extra` arguments after the usual ones.
+fn run_with(
+    dir: &TempDir,
+    cwd: &std::path::Path,
+    profile: &str,
+    env: &[(&str, &str)],
+    extra: &[OsString],
+) -> Ran {
     let profile_path = dir.0.join("profile.toml");
     std::fs::write(&profile_path, profile).expect("profile is writable");
     let Output {
@@ -123,6 +136,7 @@ fn run_in(dir: &TempDir, cwd: &std::path::Path, profile: &str, env: &[(&str, &st
         .arg(&profile_path)
         .arg("--cwd")
         .arg(cwd)
+        .args(extra)
         .env_remove("JAKKALS_TEST_KEY")
         .envs(env.iter().copied())
         .output()
@@ -323,6 +337,72 @@ fn setup_faults_exit_2_with_no_events() {
     assert_eq!(ran.status, 2, "stderr: {}", ran.stderr);
     assert!(ran.events.is_empty());
     assert!(ran.stderr.contains("--cwd"), "{:?}", ran.stderr);
+}
+
+#[test]
+fn a_transcript_records_the_conversation_and_asked_for_reasoning() {
+    let dir = TempDir::new("transcript");
+    let mut reply = answer("A cat.");
+    reply["choices"][0]["message"]["reasoning"] = json!("Check the box.");
+    let address = serve(vec![(200, reply)]);
+    let path = dir.0.join("transcript.jsonl");
+    let extra = [
+        OsString::from("--transcript"),
+        path.clone().into_os_string(),
+        OsString::from("--transcript-reasoning"),
+    ];
+    let ran = run_with(&dir, &dir.0, &profile(address, 5), &KEY, &extra);
+    assert_eq!(ran.status, 0, "stderr: {}", ran.stderr);
+    assert_eq!(
+        types(&ran.events),
+        ["start", "model_request", "model_call", "answer", "exit"]
+    );
+
+    let written = std::fs::read_to_string(&path).expect("the transcript exists");
+    let lines: Vec<Value> = written
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("each line is JSON"))
+        .collect();
+    let roles: Vec<&str> = lines
+        .iter()
+        .map(|line| line["role"].as_str().expect("a role"))
+        .collect();
+    assert_eq!(roles, ["system", "user", "assistant"]);
+    assert_eq!(lines[1]["text"], "What is in the box?");
+    assert_eq!(lines[2]["text"], "A cat.");
+    assert_eq!(lines[2]["reasoning"], "Check the box.");
+    let mode = std::fs::metadata(&path)
+        .expect("exists")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600);
+}
+
+#[test]
+fn a_transcript_path_that_exists_or_reasoning_alone_exits_2() {
+    let dir = TempDir::new("transcript-setup");
+    let address: SocketAddr = "127.0.0.1:9".parse().expect("an address");
+    let path = dir.0.join("taken.jsonl");
+    std::fs::write(&path, "someone else's\n").expect("writable");
+
+    let extra = [
+        OsString::from("--transcript"),
+        path.clone().into_os_string(),
+    ];
+    let ran = run_with(&dir, &dir.0, &profile(address, 5), &KEY, &extra);
+    assert_eq!(ran.status, 2, "stderr: {}", ran.stderr);
+    assert!(ran.events.is_empty());
+    assert!(ran.stderr.contains("--transcript"), "{:?}", ran.stderr);
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("readable"),
+        "someone else's\n",
+        "the existing file is left alone"
+    );
+
+    let extra = [OsString::from("--transcript-reasoning")];
+    let ran = run_with(&dir, &dir.0, &profile(address, 5), &KEY, &extra);
+    assert_eq!(ran.status, 2, "stderr: {}", ran.stderr);
+    assert!(ran.events.is_empty());
 }
 
 /// A fake MCP server offering `recall`, which answers every call with

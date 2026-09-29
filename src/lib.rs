@@ -2,9 +2,9 @@
 //! limit is written down. See docs/ARCHITECTURE.md for the design.
 //!
 //! The loop ([`run::run`]) decides; the edges act. It takes a
-//! [`provider::Provider`], a [`tools::Tools`], a [`clock::Clock`] and an
-//! [`events::Sink`], so tests drive it with canned replies and virtual
-//! time.
+//! [`provider::Provider`], a [`tools::Tools`], a [`clock::Clock`], an
+//! [`events::Sink`] and a [`transcript::Transcript`], so tests drive it
+//! with canned replies and virtual time.
 
 pub mod clock;
 pub mod conversation;
@@ -14,6 +14,7 @@ pub mod profile;
 pub mod provider;
 pub mod run;
 pub mod tools;
+pub mod transcript;
 
 #[cfg(test)]
 mod scripted;

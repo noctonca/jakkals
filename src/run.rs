@@ -9,6 +9,7 @@ use crate::conversation::{Message, ToolCall};
 use crate::events::{Event, LimitKind, Outcome, Record, RunError, Sink, Totals};
 use crate::provider::{Provider, ProviderError, Reply, Request};
 use crate::tools::{ToolOutcome, ToolStatus, Tools};
+use crate::transcript::{Entry, Line, Transcript};
 
 /// What one run is asked to do.
 pub struct Task<'a> {
@@ -42,20 +43,23 @@ impl Limits {
 }
 
 /// Runs one task to its end and returns why it ended. The last event
-/// emitted is always the `exit` carrying the same outcome.
-pub async fn run<P, T, C, S>(
+/// emitted is always the `exit` carrying the same outcome. The
+/// transcript gets every message sent and every reply, as they happen.
+pub async fn run<P, T, C, S, R>(
     task: &Task<'_>,
     limits: &Limits,
     provider: &mut P,
     tools: &mut T,
     clock: &C,
     sink: &mut S,
+    transcript: &mut R,
 ) -> Outcome
 where
     P: Provider,
     T: Tools,
     C: Clock,
     S: Sink,
+    R: Transcript,
 {
     // The profile refuses these; reaching here without them is a bug.
     assert!(limits.steps > 0, "limits.steps is required and positive");
@@ -64,6 +68,7 @@ where
     let mut run = Loop {
         clock,
         sink,
+        transcript,
         totals: Totals {
             cost_nano_usd: Some(0),
             ..Totals::default()
@@ -90,6 +95,14 @@ where
     messages.push(Message::User {
         text: task.prompt.to_owned(),
     });
+    for message in &messages {
+        let entry = match message {
+            Message::System { text } => Entry::System { text },
+            Message::User { text } => Entry::User { text },
+            _ => unreachable!("the run starts with the system prompt and the task"),
+        };
+        run.say(0, entry);
+    }
 
     let outcome = loop {
         // Tools take time too, so the deadline is checked before every
@@ -132,6 +145,16 @@ where
         };
         let duration_ms = run.clock.now_ms() - started_ms;
         run.record_call(step, &reply, duration_ms);
+        // Every reply is written, even one that ends the run: it is what
+        // the model said.
+        run.say(
+            step,
+            Entry::Assistant {
+                text: reply.text.as_deref(),
+                tool_calls: &reply.tool_calls,
+                reasoning: Some(reply.reasoning.as_deref()),
+            },
+        );
 
         if limits.cost_nano_usd.is_some() && reply.usage.cost_nano_usd.is_none() {
             break Outcome::Error {
@@ -189,16 +212,22 @@ where
 }
 
 /// The loop's state between steps.
-struct Loop<'a, C, S> {
+struct Loop<'a, C, S, R> {
     clock: &'a C,
     sink: &'a mut S,
+    transcript: &'a mut R,
     totals: Totals,
 }
 
-impl<C: Clock, S: Sink> Loop<'_, C, S> {
+impl<C: Clock, S: Sink, R: Transcript> Loop<'_, C, S, R> {
     fn emit(&mut self, event: Event) {
         let t_ms = self.clock.now_ms();
         self.sink.emit(Record { event, t_ms });
+    }
+
+    fn say(&mut self, step: u32, entry: Entry<'_>) {
+        let t_ms = self.clock.now_ms();
+        self.transcript.record(Line { entry, step, t_ms });
     }
 
     fn record_call(&mut self, step: u32, reply: &Reply, duration_ms: u64) {
@@ -281,6 +310,14 @@ impl<C: Clock, S: Sink> Loop<'_, C, S> {
             cut,
             duration_ms,
         });
+        self.say(
+            step,
+            Entry::Tool {
+                call_id: &call.id,
+                tool: &call.name,
+                text: &text,
+            },
+        );
         text
     }
 }

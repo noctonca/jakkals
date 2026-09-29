@@ -30,6 +30,9 @@ pub struct Request<'a> {
 pub struct Reply {
     pub text: Option<String>,
     pub tool_calls: Vec<ToolCall>,
+    /// A reasoning model's thinking, where the reply carries it. Never
+    /// sent back to the model; only the transcript may keep it.
+    pub reasoning: Option<String>,
     pub usage: Usage,
     pub generation_id: Option<String>,
     /// The model that served the call, which may differ from the one
@@ -46,7 +49,8 @@ pub struct Usage {
     pub completion_tokens: u32,
     pub cached_tokens: Option<u32>,
     /// The part of `completion_tokens` a reasoning model spent thinking,
-    /// where reported. Its text isn't kept, so this is its only trace.
+    /// where reported. Its text is kept only by a transcript that asks
+    /// for it, so this is otherwise its only trace.
     pub reasoning_tokens: Option<u32>,
     /// The cost the reply reports, in billionths of a US dollar; `None`
     /// when the server reports none (a local server), which is not 0.

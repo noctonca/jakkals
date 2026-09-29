@@ -14,12 +14,14 @@ use jakkals::run::{Task, run};
 use jakkals::tools::Toolbox;
 use jakkals::tools::local::LocalTools;
 use jakkals::tools::mcp::McpServer;
+use jakkals::transcript::{self, JsonLinesTranscript};
 
 /// The process's exit status, one per way a run can end, so a caller
 /// can branch without reading the events. Documented in ARCHITECTURE.md.
 const EXIT_DONE: u8 = 0;
-/// The run never started: a bad profile, key or directory, or an MCP
-/// server that couldn't be set up. clap uses the same status for bad
+/// The run never started: a bad profile, key or directory, a transcript
+/// file that couldn't be created, or an MCP server that couldn't be set
+/// up. clap uses the same status for bad
 /// arguments. No events are written.
 const EXIT_SETUP: u8 = 2;
 const EXIT_LIMIT: u8 = 3;
@@ -48,7 +50,20 @@ enum Command {
         /// The task.
         #[arg(long)]
         prompt: String,
+        /// Also write the conversation to this new file (mode 600), one
+        /// JSON line per message. It holds everything the model saw.
+        #[arg(long)]
+        transcript: Option<PathBuf>,
+        /// Include each reply's reasoning text in the transcript.
+        #[arg(long, requires = "transcript")]
+        transcript_reasoning: bool,
     },
+}
+
+/// Where the run's transcript goes, if anywhere.
+struct TranscriptRequest<'a> {
+    path: &'a Path,
+    reasoning: bool,
 }
 
 // One thread: the loop is sequential, and nothing it awaits needs a
@@ -62,23 +77,37 @@ async fn main() -> ExitCode {
             model,
             cwd,
             prompt,
-        } => match start(&profile, &model, &cwd, &prompt).await {
-            Ok(outcome) => ExitCode::from(match outcome {
-                Outcome::Done => EXIT_DONE,
-                Outcome::Limit { .. } => EXIT_LIMIT,
-                Outcome::Error { .. } => EXIT_ERROR,
-            }),
-            Err(message) => {
-                eprintln!("jakkals: {message}");
-                ExitCode::from(EXIT_SETUP)
+            transcript,
+            transcript_reasoning,
+        } => {
+            let transcript = transcript.as_deref().map(|path| TranscriptRequest {
+                path,
+                reasoning: transcript_reasoning,
+            });
+            match start(&profile, &model, &cwd, &prompt, transcript).await {
+                Ok(outcome) => ExitCode::from(match outcome {
+                    Outcome::Done => EXIT_DONE,
+                    Outcome::Limit { .. } => EXIT_LIMIT,
+                    Outcome::Error { .. } => EXIT_ERROR,
+                }),
+                Err(message) => {
+                    eprintln!("jakkals: {message}");
+                    ExitCode::from(EXIT_SETUP)
+                }
             }
-        },
+        }
     }
 }
 
 /// Everything a run needs is checked before its first event, so a run
 /// that starts has only the loop's ways to end.
-async fn start(profile: &Path, model: &str, cwd: &Path, prompt: &str) -> Result<Outcome, String> {
+async fn start(
+    profile: &Path,
+    model: &str,
+    cwd: &Path,
+    prompt: &str,
+    transcript: Option<TranscriptRequest<'_>>,
+) -> Result<Outcome, String> {
     let profile = Profile::read(profile).map_err(|error| error.to_string())?;
     if !cwd.is_dir() {
         return Err(format!("--cwd {} is not a directory", cwd.display()));
@@ -112,6 +141,15 @@ async fn start(profile: &Path, model: &str, cwd: &Path, prompt: &str) -> Result<
         );
     }
     let mut tools = Toolbox::new(local, servers);
+    // Created last, so a run that fails setup leaves no empty file whose
+    // path the next attempt would be refused.
+    let mut transcript = transcript
+        .map(|request| {
+            transcript::create(request.path)
+                .map(|file| JsonLinesTranscript::new(file, request.reasoning))
+                .map_err(|error| format!("--transcript {}: {error}", request.path.display()))
+        })
+        .transpose()?;
 
     let task = Task {
         system_prompt: &profile.system_prompt,
@@ -127,6 +165,7 @@ async fn start(profile: &Path, model: &str, cwd: &Path, prompt: &str) -> Result<
         &mut tools,
         &MonotonicClock::start(),
         &mut sink,
+        &mut transcript,
     )
     .await)
 }

@@ -140,6 +140,19 @@ async fn complete(
         .await
 }
 
+#[tokio::test]
+async fn local_reasoning_content_is_the_reasoning() {
+    let mut answer = local_answer();
+    answer["choices"][0]["message"]["reasoning_content"] = json!("Nothing in it.");
+    let (address, _seen) = serve(vec![ok(&answer)]);
+    let mut provider = provider(address, None, json!({}));
+    let reply = complete(&mut provider, &user("Look."), &[], DEADLINE_MS)
+        .await
+        .expect("the reply parses");
+    assert_eq!(reply.reasoning.as_deref(), Some("Nothing in it."));
+    assert_eq!(reply.text.as_deref(), Some("It is empty."));
+}
+
 fn user(text: &str) -> Vec<Message> {
     vec![Message::User {
         text: text.to_owned(),
@@ -269,6 +282,7 @@ async fn openrouter_reply_keeps_cost_provider_and_generation() {
             "message": {
                 "role": "assistant",
                 "content": null,
+                "reasoning": "Two places to look.",
                 "tool_calls": [
                     {"id": "call-a", "index": 0, "type": "function",
                      "function": {"name": "read", "arguments": "{\"path\":\"a\"}"}},
@@ -308,6 +322,7 @@ async fn openrouter_reply_keeps_cost_provider_and_generation() {
                     arguments: "{}".to_owned(),
                 },
             ],
+            reasoning: Some("Two places to look.".to_owned()),
             usage: Usage {
                 prompt_tokens: 1200,
                 completion_tokens: 30,
@@ -336,6 +351,7 @@ async fn local_reply_without_cost_is_none_not_zero() {
     assert_eq!(reply.usage.cost_nano_usd, None);
     assert_eq!(reply.usage.cached_tokens, None);
     assert_eq!(reply.usage.reasoning_tokens, None);
+    assert_eq!(reply.reasoning, None);
     assert_eq!(reply.provider, None);
     assert_eq!(reply.generation_id.as_deref(), Some("chatcmpl-1"));
 }

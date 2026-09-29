@@ -6,6 +6,7 @@ use crate::scripted::{
     KeptSink, ScriptedProvider, ScriptedTools, VirtualClock, answer, block_on, calls, reply,
 };
 use crate::tools::mcp::McpServerRecord;
+use crate::transcript::{JsonLinesTranscript, NoTranscript};
 
 const TASK: Task<'static> = Task {
     system_prompt: "You are a test.",
@@ -26,6 +27,8 @@ const LIMITS: Limits = Limits {
 struct Ran {
     outcome: Outcome,
     events: Vec<Event>,
+    /// The transcript's lines, reasoning included.
+    transcript: Vec<serde_json::Value>,
     provider: ScriptedProvider,
     tools: ScriptedTools,
 }
@@ -38,6 +41,7 @@ fn run_scripted(
     mut tools: ScriptedTools,
 ) -> Ran {
     let mut sink = KeptSink::default();
+    let mut written = Vec::new();
     let outcome = block_on(run(
         task,
         limits,
@@ -45,7 +49,13 @@ fn run_scripted(
         &mut tools,
         clock,
         &mut sink,
+        &mut JsonLinesTranscript::new(&mut written, true),
     ));
+    let transcript = String::from_utf8(written)
+        .expect("the transcript is UTF-8")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("each line is JSON"))
+        .collect();
     let events: Vec<Event> = sink
         .records
         .into_iter()
@@ -58,6 +68,7 @@ fn run_scripted(
     Ran {
         outcome,
         events,
+        transcript,
         provider,
         tools,
     }
@@ -107,6 +118,7 @@ fn the_event_stream_has_the_documented_shape() {
         &mut tools,
         &clock,
         &mut sink,
+        &mut NoTranscript,
     ));
 
     let version = env!("CARGO_PKG_VERSION");
@@ -592,4 +604,98 @@ fn each_mcp_server_is_recorded_after_start_in_the_order_offered() {
         })
         .collect();
     assert_eq!(servers, ["alpha", "beta"]);
+}
+
+/// The transcript lines' roles, in order.
+fn roles(ran: &Ran) -> Vec<&str> {
+    ran.transcript
+        .iter()
+        .map(|line| line["role"].as_str().expect("every line has a role"))
+        .collect()
+}
+
+#[test]
+fn the_transcript_is_the_conversation_with_steps_and_times() {
+    let clock = VirtualClock::default();
+    let mut first = calls(&["read"], reply(100, 10, Some(1)));
+    first.reasoning = Some("Look in the box.".to_owned());
+    let provider = ScriptedProvider::new(&clock)
+        .then(Ok(first), 250)
+        .then(Ok(answer("A cat.", reply(130, 5, Some(1)))), 300);
+    let tools = ScriptedTools::new(&clock, &["read"]).then(ToolOutcome::Ok("a cat".to_owned()), 20);
+    let ran = run_scripted(&TASK, &LIMITS, &clock, provider, tools);
+
+    let expected = serde_json::json!([
+        {"role": "system", "text": "You are a test.", "step": 0, "t_ms": 0},
+        {"role": "user", "text": "What is in the box?", "step": 0, "t_ms": 0},
+        {"role": "assistant", "text": null, "reasoning": "Look in the box.", "step": 1, "t_ms": 250,
+         "tool_calls": [{"id": "call-0", "name": "read", "arguments": "{}"}]},
+        {"role": "tool", "call_id": "call-0", "tool": "read", "text": "a cat", "step": 1, "t_ms": 270},
+        {"role": "assistant", "text": "A cat.", "reasoning": null, "tool_calls": [], "step": 2, "t_ms": 570},
+    ]);
+    assert_eq!(serde_json::Value::Array(ran.transcript.clone()), expected);
+
+    // Each request's message count is the lines written before it, so
+    // the transcript joins the events.
+    let sent: Vec<usize> = ran
+        .provider
+        .seen
+        .iter()
+        .map(|seen| seen.messages.len())
+        .collect();
+    assert_eq!(sent, [2, 4]);
+}
+
+#[test]
+fn a_reply_a_limit_stops_is_written_but_its_tools_are_not() {
+    let clock = VirtualClock::default();
+    let limits = Limits { steps: 1, ..LIMITS };
+    let provider = ScriptedProvider::new(&clock).then(Ok(calls(&["read"], reply(10, 1, None))), 1);
+    let ran = run_scripted(
+        &TASK,
+        &limits,
+        &clock,
+        provider,
+        ScriptedTools::new(&clock, &["read"]),
+    );
+
+    assert_eq!(
+        ran.outcome,
+        Outcome::Limit {
+            which: LimitKind::Steps
+        }
+    );
+    assert_eq!(roles(&ran), ["system", "user", "assistant"]);
+}
+
+#[test]
+fn a_refused_call_and_a_cut_result_are_written_as_the_model_got_them() {
+    let clock = VirtualClock::default();
+    let limits = Limits {
+        tool_output_bytes: 60,
+        ..LIMITS
+    };
+    let provider = ScriptedProvider::new(&clock)
+        .then(Ok(calls(&["read", "write"], reply(10, 1, None))), 1)
+        .then(Ok(answer("Done.", reply(10, 1, None))), 1);
+    let tools = ScriptedTools::new(&clock, &["read"]).then(ToolOutcome::Ok("x".repeat(70)), 1);
+    let ran = run_scripted(&TASK, &limits, &clock, provider, tools);
+
+    let results: Vec<&str> = ran
+        .transcript
+        .iter()
+        .filter(|line| line["role"] == "tool")
+        .map(|line| line["text"].as_str().expect("a tool line has text"))
+        .collect();
+    let sent: Vec<String> = ran.provider.seen[1]
+        .messages
+        .iter()
+        .filter_map(|message| match message {
+            Message::Tool { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results, sent);
+    assert!(results[0].ends_with("\n[jakkals: output cut at 60 of 70 bytes]"));
+    assert!(results[1].contains("no tool named `write`"));
 }
