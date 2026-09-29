@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::conversation::ToolSpec;
-use crate::tools::Stop;
+use crate::tools::{Failure, Refusal, Stop};
 
 /// The default for `tools.shell_timeout_s`: a choice, long enough for
 /// `git log` or a search over a large repository.
@@ -324,15 +324,21 @@ impl Shell {
     ) -> Result<String, Stop> {
         let command = &arguments.command;
         let words = words(command).map_err(|error| match error {
-            WordsError::ShellCharacter(character) => Stop::Refused(format!(
-                "`{command}` holds `{}`; there is no shell: run one program, \
-                 with no pipes, redirects, variables or globs",
-                character.escape_default()
-            )),
-            WordsError::Unsplittable => {
-                Stop::Failed(format!("`{command}` has a quote that doesn't close"))
+            WordsError::ShellCharacter(character) => Stop::Refused(
+                Refusal::ShellSyntax,
+                format!(
+                    "`{command}` holds `{}`; there is no shell: run one program, \
+                     with no pipes, redirects, variables or globs",
+                    character.escape_default()
+                ),
+            ),
+            WordsError::Unsplittable => Stop::Failed(
+                Failure::Arguments,
+                format!("`{command}` has a quote that doesn't close"),
+            ),
+            WordsError::Empty => {
+                Stop::Failed(Failure::Arguments, "the command is empty".to_owned())
             }
-            WordsError::Empty => Stop::Failed("the command is empty".to_owned()),
         })?;
         if !self
             .settings
@@ -346,10 +352,13 @@ impl Shell {
                 .iter()
                 .map(|entry| entry.join(" "))
                 .collect();
-            return Err(Stop::Refused(format!(
-                "`{command}` isn't allowed; allowed commands begin with: {}",
-                allowed.join(", ")
-            )));
+            return Err(Stop::Refused(
+                Refusal::NotAllowed,
+                format!(
+                    "`{command}` isn't allowed; allowed commands begin with: {}",
+                    allowed.join(", ")
+                ),
+            ));
         }
 
         let timeout = Duration::from_secs(u64::from(self.settings.timeout_s));
@@ -358,12 +367,14 @@ impl Shell {
             _ => (deadline, End::Deadline),
         };
         if Instant::now() >= stop_at {
-            return Err(Stop::Failed(end_line(stop, &self.settings)));
+            return Err(Stop::Failed(stop.failure(), end_line(stop, &self.settings)));
         }
-        let mut child = self
-            .command(&words)
-            .spawn()
-            .map_err(|error| Stop::Failed(format!("can't start `{}`: {error}", words[0])))?;
+        let mut child = self.command(&words).spawn().map_err(|error| {
+            Stop::Failed(
+                Failure::Spawn,
+                format!("can't start `{}`: {error}", words[0]),
+            )
+        })?;
         let stdout = capture(child.stdout.take().expect("stdout is piped"));
         let stderr = capture(child.stderr.take().expect("stderr is piped"));
         let end = wait(&mut child, stop_at, stop);
@@ -389,7 +400,7 @@ impl Shell {
             text.push('\n');
         }
         text.push_str(&end_line(end, &self.settings));
-        Err(Stop::Failed(text))
+        Err(Stop::Failed(end.failure(), text))
     }
 
     fn command(&self, words: &[String]) -> Command {
@@ -498,6 +509,19 @@ enum End {
     Deadline,
     /// Waiting on it failed; it was killed.
     Lost,
+}
+
+impl End {
+    /// Why a command that didn't exit 0 failed.
+    fn failure(self) -> Failure {
+        match self {
+            End::Exited(status) => Failure::ExitStatus { status },
+            End::Signal(signal) => Failure::Signal { signal },
+            End::Timeout => Failure::Timeout,
+            End::Deadline => Failure::Deadline,
+            End::Lost => Failure::Lost,
+        }
+    }
 }
 
 fn end_line(end: End, settings: &ShellSettings) -> String {

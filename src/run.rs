@@ -9,7 +9,7 @@ use crate::clock::Clock;
 use crate::conversation::{Message, ToolCall};
 use crate::events::{Event, LimitKind, Outcome, Record, RunError, Sink, Totals};
 use crate::provider::{Provider, ProviderError, Reply, Request};
-use crate::tools::{ToolOutcome, ToolStatus, Tools};
+use crate::tools::{Refusal, ToolOutcome, ToolStatus, Tools};
 use crate::transcript::{Entry, Line, Transcript};
 
 /// What one run is asked to do.
@@ -302,10 +302,14 @@ impl<C: Clock, S: Sink, R: Transcript> Loop<'_, C, S, R> {
         let outcome = if tools.specs().iter().any(|spec| spec.name == call.name) {
             tools.call(call, deadline_ms).await
         } else {
-            ToolOutcome::Refused(format!("jakkals: there is no tool named `{}`", call.name))
+            ToolOutcome::Refused(
+                Refusal::NotOffered,
+                format!("jakkals: there is no tool named `{}`", call.name),
+            )
         };
         let duration_ms = self.clock.now_ms() - started_ms;
         let status: ToolStatus = outcome.status();
+        let cause = outcome.cause();
         let text = outcome.into_text();
         let result_bytes = u64::try_from(text.len()).expect("result shorter than 2^64 bytes");
         let (text, cut) = cut(text, cap_bytes);
@@ -315,6 +319,7 @@ impl<C: Clock, S: Sink, R: Transcript> Loop<'_, C, S, R> {
             tool: call.name.clone(),
             arguments: call.arguments.clone(),
             status,
+            cause,
             result_bytes,
             cut,
             duration_ms,

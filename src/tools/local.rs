@@ -21,7 +21,7 @@ use serde_json::json;
 use crate::conversation::{ToolCall, ToolSpec};
 use crate::tools::mcp::McpServerRecord;
 use crate::tools::shell::{Sandbox, Shell, ShellSettings, ShellSetupError};
-use crate::tools::{Stop, ToolOutcome, Tools};
+use crate::tools::{Failure, Refusal, Stop, ToolOutcome, Tools};
 
 /// `read`'s largest file: 1 MiB. A choice: 32 times the default
 /// `limits.tool_output_bytes`, room for any hand-written source file.
@@ -195,14 +195,18 @@ impl LocalTools {
         let shown = &arguments.path;
         let path = self.resolve(shown)?;
         if path.is_dir() {
-            return Err(Stop::Failed(format!(
-                "`{shown}` is a directory; list it instead"
-            )));
+            return Err(Stop::Failed(
+                Failure::WrongType,
+                format!("`{shown}` is a directory; list it instead"),
+            ));
         }
         let too_large = |bytes: u64| {
-            Stop::Failed(format!(
-                "`{shown}` is {bytes} bytes, past read's cap of {READ_CAP_BYTES}; search it instead"
-            ))
+            Stop::Failed(
+                Failure::TooLarge,
+                format!(
+                    "`{shown}` is {bytes} bytes, past read's cap of {READ_CAP_BYTES}; search it instead"
+                ),
+            )
         };
         let file = File::open(&path).map_err(|error| io_failed(shown, &error))?;
         let length = file
@@ -222,25 +226,34 @@ impl LocalTools {
             return Err(too_large(length));
         }
         let text = String::from_utf8(bytes)
-            .map_err(|_| Stop::Failed(format!("`{shown}` isn't UTF-8 text")))?;
+            .map_err(|_| Stop::Failed(Failure::NotText, format!("`{shown}` isn't UTF-8 text")))?;
         if arguments.start_line.is_none() && arguments.line_count.is_none() {
             return Ok(text);
         }
 
         let start_line = arguments.start_line.unwrap_or(1);
         if start_line == 0 {
-            return Err(Stop::Failed("start_line counts from 1".to_owned()));
+            return Err(Stop::Failed(
+                Failure::Arguments,
+                "start_line counts from 1".to_owned(),
+            ));
         }
         if arguments.line_count == Some(0) {
-            return Err(Stop::Failed("line_count must be at least 1".to_owned()));
+            return Err(Stop::Failed(
+                Failure::Arguments,
+                "line_count must be at least 1".to_owned(),
+            ));
         }
         let lines: Vec<&str> = text.split_inclusive('\n').collect();
         let first = usize::try_from(start_line - 1).expect("u32 fits usize");
         if first >= lines.len() {
-            return Err(Stop::Failed(format!(
-                "`{shown}` has {} lines; start_line {start_line} is past its end",
-                lines.len()
-            )));
+            return Err(Stop::Failed(
+                Failure::Arguments,
+                format!(
+                    "`{shown}` has {} lines; start_line {start_line} is past its end",
+                    lines.len()
+                ),
+            ));
         }
         let end = match arguments.line_count {
             None => lines.len(),
@@ -255,12 +268,16 @@ impl LocalTools {
         let shown = arguments.path.as_deref().unwrap_or(".");
         let path = self.resolve(shown)?;
         if !path.is_dir() {
-            return Err(Stop::Failed(format!(
-                "`{shown}` is a file; read it instead"
-            )));
+            return Err(Stop::Failed(
+                Failure::WrongType,
+                format!("`{shown}` is a file; read it instead"),
+            ));
         }
         if arguments.depth == Some(0) {
-            return Err(Stop::Failed("depth must be at least 1".to_owned()));
+            return Err(Stop::Failed(
+                Failure::Arguments,
+                "depth must be at least 1".to_owned(),
+            ));
         }
 
         let mut text = String::new();
@@ -309,8 +326,12 @@ impl LocalTools {
     fn search(&self, arguments: SearchArguments, deadline: Instant) -> Result<String, Stop> {
         let shown = arguments.path.as_deref().unwrap_or(".");
         let path = self.resolve(shown)?;
-        let matcher = RegexMatcher::new_line_matcher(&arguments.pattern)
-            .map_err(|error| Stop::Failed(format!("the pattern isn't valid: {error}")))?;
+        let matcher = RegexMatcher::new_line_matcher(&arguments.pattern).map_err(|error| {
+            Stop::Failed(
+                Failure::Arguments,
+                format!("the pattern isn't valid: {error}"),
+            )
+        })?;
         let mut searcher = SearcherBuilder::new()
             .binary_detection(BinaryDetection::quit(0))
             .line_number(true)
@@ -370,14 +391,18 @@ impl LocalTools {
             match component {
                 Component::Normal(_) | Component::CurDir => {}
                 Component::ParentDir => {
-                    return Err(Stop::Refused(format!(
-                        "`{shown}` holds `..`; paths stay inside the working directory"
-                    )));
+                    return Err(Stop::Refused(
+                        Refusal::OutsideCwd,
+                        format!("`{shown}` holds `..`; paths stay inside the working directory"),
+                    ));
                 }
                 Component::RootDir | Component::Prefix(_) => {
-                    return Err(Stop::Refused(format!(
-                        "`{shown}` is absolute; give a path relative to the working directory"
-                    )));
+                    return Err(Stop::Refused(
+                        Refusal::OutsideCwd,
+                        format!(
+                            "`{shown}` is absolute; give a path relative to the working directory"
+                        ),
+                    ));
                 }
             }
         }
@@ -389,9 +414,10 @@ impl LocalTools {
             .canonicalize()
             .map_err(|error| io_failed(shown, &error))?;
         if !resolved.starts_with(&self.root) {
-            return Err(Stop::Refused(format!(
-                "`{shown}` leads outside the working directory"
-            )));
+            return Err(Stop::Refused(
+                Refusal::OutsideCwd,
+                format!("`{shown}` leads outside the working directory"),
+            ));
         }
         Ok(resolved)
     }
@@ -472,8 +498,12 @@ struct SearchArguments {
 }
 
 fn arguments<T: DeserializeOwned>(text: &str) -> Result<T, Stop> {
-    serde_json::from_str(text)
-        .map_err(|error| Stop::Failed(format!("the arguments aren't valid: {error}")))
+    serde_json::from_str(text).map_err(|error| {
+        Stop::Failed(
+            Failure::Arguments,
+            format!("the arguments aren't valid: {error}"),
+        )
+    })
 }
 
 /// A walk from `path` down, skipping hidden and ignored entries and
@@ -492,15 +522,18 @@ fn walk(path: &Path) -> WalkBuilder {
 
 fn io_failed(shown: &str, error: &std::io::Error) -> Stop {
     match error.kind() {
-        std::io::ErrorKind::NotFound => Stop::Failed(format!("`{shown}` doesn't exist")),
-        _ => Stop::Failed(format!("`{shown}`: {error}")),
+        std::io::ErrorKind::NotFound => {
+            Stop::Failed(Failure::NotFound, format!("`{shown}` doesn't exist"))
+        }
+        _ => Stop::Failed(Failure::Io, format!("`{shown}`: {error}")),
     }
 }
 
 fn deadline_passed(tool: &str) -> Stop {
-    Stop::Failed(format!(
-        "jakkals: the run's deadline passed; `{tool}` stopped"
-    ))
+    Stop::Failed(
+        Failure::Deadline,
+        format!("jakkals: the run's deadline passed; `{tool}` stopped"),
+    )
 }
 
 fn note_skipped(text: &mut String, skipped: u32) {
