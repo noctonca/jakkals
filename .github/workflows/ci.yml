@@ -21,3 +21,18 @@ jobs:
       - run: cargo test
       # What crates.io would receive: the include list in Cargo.toml.
       - run: cargo package --locked
+
+  # The shell's sandbox differs by system (Landlock here above, Seatbelt
+  # on macOS), and each system's tests run only on it.
+  macos:
+    name: clippy, test on macOS
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test

@@ -297,7 +297,13 @@ fn shell_settings(file: FileTools, offered: bool) -> Result<Option<ShellSettings
         allow.push(words);
     }
 
-    let sandbox = file.sandbox.unwrap_or(Sandbox::Seatbelt);
+    let sandbox = file
+        .sandbox
+        .or_else(Sandbox::native)
+        .ok_or(ProfileError::Invalid {
+            field: "tools.sandbox",
+            problem: "has no default on this system; write `none` to run with word checks only",
+        })?;
     let sandbox_read: Vec<std::path::PathBuf> = file
         .sandbox_read
         .unwrap_or_default()

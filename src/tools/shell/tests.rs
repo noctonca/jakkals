@@ -324,6 +324,105 @@ mod seatbelt {
     }
 }
 
+#[cfg(target_os = "linux")]
+mod landlock {
+    use super::*;
+
+    #[test]
+    fn reads_stay_inside_and_nothing_is_written() {
+        let dir = TempDir::new("shell-landlock");
+        dir.write("box.txt", "a cat\n");
+        std::fs::write(dir.base.join("outside.txt"), "not yours\n").expect("file is writable");
+        let mut tools = shell(
+            &dir,
+            &settings(
+                &["cat", "touch", "ls", "truncate", "mkdir"],
+                Sandbox::Landlock,
+            ),
+        );
+        assert_eq!(tools.sandbox(), Some(Sandbox::Landlock));
+
+        assert_eq!(
+            run(&mut tools, "cat box.txt"),
+            ToolOutcome::Ok("a cat\n".to_owned())
+        );
+        for command in [
+            "cat ../outside.txt",
+            "cat /etc/passwd",
+            "ls /home",
+            "touch new.txt",
+            "mkdir new",
+            "truncate -s 0 box.txt",
+        ] {
+            assert_outcome(
+                run(&mut tools, command),
+                ToolStatus::Failed,
+                "Permission denied",
+            );
+        }
+        assert!(!dir.root.join("new.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(dir.root.join("box.txt")).expect("still there"),
+            "a cat\n"
+        );
+    }
+
+    #[test]
+    fn no_socket_opens() {
+        let dir = TempDir::new("shell-landlock-socket");
+        // Perl is on every Linux that has git. Address families 2 and 1
+        // are the internet's and Unix's; type 1 is a stream.
+        dir.write(
+            "socket.pl",
+            "for my $family (2, 1) { socket(my $s, $family, 1, 0) or print \"$family: $!\\n\" }\n",
+        );
+        let mut tools = shell(&dir, &settings(&["perl"], Sandbox::Landlock));
+
+        assert_eq!(
+            run(&mut tools, "perl socket.pl"),
+            ToolOutcome::Ok("2: Operation not permitted\n1: Operation not permitted\n".to_owned())
+        );
+        let mut open = shell(&dir, &settings(&["perl"], Sandbox::None));
+        assert_eq!(
+            run(&mut open, "perl socket.pl"),
+            ToolOutcome::Ok(String::new()),
+            "the same script opens both without the sandbox"
+        );
+    }
+
+    #[test]
+    fn sandbox_read_opens_a_path_to_reading() {
+        let dir = TempDir::new("shell-landlock-read");
+        let extra = dir.base.join("extra");
+        std::fs::create_dir(&extra).expect("dir is creatable");
+        std::fs::write(extra.join("lib.txt"), "shared\n").expect("file is writable");
+        let mut with_read = settings(&["cat"], Sandbox::Landlock);
+        with_read.sandbox_read = vec![extra.clone()];
+        let mut tools = shell(&dir, &with_read);
+
+        let command = format!("cat {}", extra.join("lib.txt").display());
+        assert_eq!(
+            run(&mut tools, &command),
+            ToolOutcome::Ok("shared\n".to_owned())
+        );
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn landlock_needs_linux() {
+    let dir = TempDir::new("shell-no-landlock");
+    let error = LocalTools::new(
+        &dir.root,
+        &[LocalTool::Shell],
+        Some(&settings(&["cat"], Sandbox::Landlock)),
+        None,
+    )
+    .err()
+    .expect("setup fails");
+    assert!(error.to_string().contains("needs Linux"), "{error}");
+}
+
 #[cfg(not(target_os = "macos"))]
 #[test]
 fn seatbelt_needs_macos() {
