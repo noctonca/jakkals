@@ -133,6 +133,21 @@ A run with no `exit` line did not end cleanly and is void. Costs are
 in billionths of a US dollar (`cost_nano_usd`), integers, `null` where
 not reported.
 
+## Exit status
+
+`jakkals run` exits with a status per way the run ended, so a caller
+can branch without reading the events; the `exit` event says the rest.
+
+| Status | Meaning |
+|---|---|
+| 0 | `done`: the model answered. |
+| 2 | The run never started: a bad argument, profile, key variable or `--cwd`. The reason is on stderr, and no events are written. |
+| 3 | `limit`: the `exit` event names which. |
+| 4 | `error`: the `exit` event carries the typed error. |
+
+Any other status (a panic, a kill) means the run did not end cleanly;
+its events have no `exit` line.
+
 ## Survivable failures (proposed)
 
 Only these end in something other than an error exit, each with an
