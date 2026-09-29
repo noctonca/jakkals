@@ -153,6 +153,7 @@ pub fn reply(prompt_tokens: u32, completion_tokens: u32, cost_nano_usd: Option<u
             prompt_tokens,
             completion_tokens,
             cached_tokens: None,
+            reasoning_tokens: None,
             cost_nano_usd,
         },
         generation_id: None,

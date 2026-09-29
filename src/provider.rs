@@ -45,6 +45,9 @@ pub struct Usage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
     pub cached_tokens: Option<u32>,
+    /// The part of `completion_tokens` a reasoning model spent thinking,
+    /// where reported. Its text isn't kept, so this is its only trace.
+    pub reasoning_tokens: Option<u32>,
     /// The cost the reply reports, in billionths of a US dollar; `None`
     /// when the server reports none (a local server), which is not 0.
     pub cost_nano_usd: Option<u64>,

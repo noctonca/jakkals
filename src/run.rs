@@ -216,6 +216,7 @@ impl<C: Clock, S: Sink> Loop<'_, C, S> {
             input_tokens: usage.prompt_tokens,
             output_tokens: usage.completion_tokens,
             cached_tokens: usage.cached_tokens,
+            reasoning_tokens: usage.reasoning_tokens,
             cost_nano_usd: usage.cost_nano_usd,
             duration_ms,
             finish_reason: reply.finish_reason.clone(),
