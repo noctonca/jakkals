@@ -7,12 +7,12 @@ nobody watching.
 ## Safety
 
 - **End a run cleanly, or crash.** A run ends with one exit event
-  naming why: done, a limit hit, refused, or a typed error. A state
+  naming why: done, a limit hit, or a typed error. A state
   the code doesn't understand is a panic, not a guess; the caller sees
   a missing exit event and knows the run is void.
 - **Recover only where recovery is designed.** The survivable failures
-  are enumerated in ARCHITECTURE.md, each one a profile choice with an
-  event. Everything else ends the run.
+  are enumerated in ARCHITECTURE.md, each with an event. Everything
+  else ends the run.
 - **Assert liberally.** Function entry preconditions, loop state,
   token and cost arithmetic. Assertions stay on in release.
 - **`lock().unwrap()` is the policy**, not a smell: a poisoned lock is

@@ -28,11 +28,19 @@ allowlisted shell) plus the tools it names from MCP servers.
 
 ## Status
 
-Early. `jakkals run` works end to end against OpenRouter or a local
-server, with the local tools `read`, `list`, `search` and an
-allowlisted `shell` (sandboxed on macOS and Linux) when the profile
-offers them, and the tools it lists from MCP servers over streamable
-HTTP. The design is [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Early, with no release yet. `jakkals run` works end to end against
+OpenRouter or a local server, with the local tools `read`, `list`,
+`search` and an allowlisted `shell` (sandboxed on macOS and Linux)
+when the profile offers them, and the tools it lists from MCP servers
+over streamable HTTP.
+
+## Installing it
+
+From a clone, with Rust 1.95 or later:
+
+```sh
+cargo install --path .
+```
 
 ## Running it
 
@@ -54,16 +62,32 @@ local = ["read", "list", "search"]
 Then:
 
 ```sh
-cargo run -- run --profile openrouter.local.toml --model <provider/model> \
+export OPENROUTER_API_KEY=…
+jakkals run --profile openrouter.local.toml --model <provider/model> \
   --cwd <project> --prompt "<task>" | jq -c .
 ```
 
-The events go to stdout as JSON lines and the exit status says how the
-run ended; both are described in the architecture. The events carry
-no conversation text beyond the answer: add `--transcript` to record
-every message the model was sent and wrote, in
-`~/.local/share/jakkals/transcripts/` (or give it a file path), and
-`--transcript-reasoning` to include its reasoning text.
+The events go to stdout as JSON lines, and the exit status says how
+the run ended: 0 answered, 2 never started (the reason is on stderr),
+3 hit a limit, 4 an error. The events carry no conversation text
+beyond the answer: add `--transcript` to record every message the
+model was sent and wrote, in `~/.local/share/jakkals/transcripts/`
+(or give it a file path), and `--transcript-reasoning` to include its
+reasoning text.
+
+## The reference
+
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) is the design, and the
+reference for:
+
+- [the profile's fields](docs/ARCHITECTURE.md#the-profile), with their defaults;
+- [the events](docs/ARCHITECTURE.md#events), field by field;
+- [the transcript](docs/ARCHITECTURE.md#the-transcript);
+- [the exit statuses](docs/ARCHITECTURE.md#exit-status);
+- [the local tools](docs/ARCHITECTURE.md#the-local-tools), [the shell and its sandboxes](docs/ARCHITECTURE.md#the-shell-tool), and [MCP servers](docs/ARCHITECTURE.md#mcp-servers).
+
+To work on Jakkals, read [AGENTS.md](AGENTS.md): it is for people and
+their coding assistants alike.
 
 ## Licence
 
