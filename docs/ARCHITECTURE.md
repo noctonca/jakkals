@@ -137,7 +137,7 @@ then `answer` if the model answered, and `exit` last. A run with no
 
 | `type` | Fields |
 |---|---|
-| `start` | `version` (Jakkals's); `profile_hash`; `model` (as asked for); `tools`, the names offered in order, MCP tools with their prefix; `sandbox`, the shell's (`seatbelt`, `landlock`, `none`, or `null` when `shell` isn't offered); `limits`, those in force: `steps`, `wall_s`, `cost_nano_usd` (the profile's `cost_usd` in nano-dollars), `tokens`, `context_tokens`, `tool_output_bytes`, unset ones `null`; `transcript`, the file's absolute path, or `null` when none is written. |
+| `start` | `version` (Jakkals's); `commit` and `dirty`, the build's (see [Which build ran](#which-build-ran)); `profile_hash`; `model` (as asked for); `tools`, the names offered in order, MCP tools with their prefix; `sandbox`, the shell's (`seatbelt`, `landlock`, `none`, or `null` when `shell` isn't offered); `limits`, those in force: `steps`, `wall_s`, `cost_nano_usd` (the profile's `cost_usd` in nano-dollars), `tokens`, `context_tokens`, `tool_output_bytes`, unset ones `null`; `transcript`, the file's absolute path, or `null` when none is written. |
 | `mcp_server` | One per MCP server, in the order its tools are offered. `server`, the profile's name for it; `server_name` and `server_version`, as the server reports them; `protocol_version`, the one agreed; `setup_ms`; `tools`, each offered tool exactly as the model sees it: `name`, `description`, `parameters` (a JSON Schema). |
 | `model_request` | `step`; `messages`, the number sent. Written as the request leaves, so a slow call shows as in flight and a run killed mid-call shows which call it died in. |
 | `model_call` | The reply to the `model_request` of the same `step`: `generation_id`; `model` and `provider`, those that served it (a router may pick another model than the one asked for); `input_tokens`, `output_tokens`; `cached_tokens`; `reasoning_tokens` (counted in `output_tokens`, not on top of them); `cost_nano_usd`; `duration_ms`; `finish_reason`. A call that fails has no `model_call`: the `exit` carries the error. |
@@ -157,10 +157,25 @@ An `error` is one of:
 A provider that runs out of time is not an error: the run ends
 `limit` `wall_s`.
 
+### Which build ran
+
+A version names a release, but a run may come from any build between
+two releases, or from one with uncommitted changes. So the `start`
+event also carries the build's `commit`, the full git hash it was
+built from, and `dirty`: `true` when the files the build is made
+from (`src/`, `build.rs`, `Cargo.toml`, `Cargo.lock`) differed from
+that commit, new untracked files among them. [`build.rs`](../build.rs)
+asks git for both when the crate is built. A crate from crates.io has
+no git history; its packaged `.cargo_vcs_info.json` says which commit
+it was packaged from, and whether that was dirty. A build from
+neither (a source tarball, a machine without `git`) records both as
+`null`: unknown, not clean. `jakkals --version` shows the same, as
+`jakkals 0.1.0 (1a2b3c4d5e6f)` or `jakkals 0.1.0 (1a2b3c4d5e6f, dirty)`.
+
 A short run, with the `start` and `model_call` lines trimmed:
 
 ```jsonl
-{"type":"start","version":"0.0.0","profile_hash":"sha256:…","model":"some/model","tools":["read","list"],"sandbox":null,"limits":{…},"transcript":null,"t_ms":0}
+{"type":"start","version":"0.1.0","commit":"…","dirty":false,"profile_hash":"sha256:…","model":"some/model","tools":["read","list"],"sandbox":null,"limits":{…},"transcript":null,"t_ms":0}
 {"type":"model_request","step":1,"messages":2,"t_ms":1}
 {"type":"model_call","step":1,"generation_id":"gen-…","input_tokens":812,"output_tokens":41,"cost_nano_usd":93000,"finish_reason":"tool_calls",…,"t_ms":1650}
 {"type":"tool_call","step":1,"tool":"read","arguments":"{\"path\":\"box.txt\"}","status":"ok","result_bytes":28,"cut":false,"duration_ms":0,"t_ms":1651}
