@@ -1,8 +1,8 @@
 # Architecture
 
-Status: **draft**. The fixed decisions below are settled, and so are
-the profile fields, the local tools and MCP servers. The event shapes
-are a first proposal, to be settled by the code that writes them.
+This is the design and the reference: what each profile field, event,
+exit status and bound means. It describes what the code does now;
+work not built yet is marked **Later**.
 
 ## What Jakkals is
 
@@ -117,26 +117,58 @@ cost_usd = 0.50
 api_key_env = "OPENROUTER_API_KEY"
 ```
 
-## Events (proposed)
+## Events
 
-One JSON object per line, each with `type` and a run-relative time.
-Each line is written and flushed when the thing it records happens, so
-a caller (or `jq` in a terminal) watches the run live rather than
-after it.
+[`src/events.rs`](../src/events.rs). One JSON object per line on
+stdout, each with its `type` and `t_ms`, the milliseconds since the
+run started. Each line is written and flushed when the thing it
+records happens, so a caller (or `jq` in a terminal) watches the run
+live rather than after it.
 
-| `type` | Carries |
+The events are the interface other programs read: a field is added,
+never renamed, retyped or removed. Costs are integers in billionths
+of a US dollar (`cost_nano_usd`); a field the provider or server
+didn't report is `null`, never 0. Steps count from 1.
+
+A run writes `start`, then one `mcp_server` per server, then for each
+step a `model_request`, its `model_call` and the step's `tool_call`s,
+then `answer` if the model answered, and `exit` last. A run with no
+`exit` line did not end cleanly and is void.
+
+| `type` | Fields |
 |---|---|
-| `start` | Jakkals version, profile hash, model, tool names (MCP tools' with their prefix), the shell's `sandbox` (`seatbelt`, `none`, or `null` when `shell` isn't offered), the limits in force, and the `transcript` file's absolute path (`null` when none is written). |
-| `mcp_server` | One per MCP server, after `start`, in the order the tools are offered: the profile's name for it, the name and version the server reports, the protocol version agreed, how long setting it up took, and each offered tool as the model sees it: name, description, parameters. |
-| `model_request` | Step, number of messages sent. Written as the request leaves, so a slow call shows as in flight and a run killed mid-call shows which call it died in. |
-| `model_call` | The reply to a `model_request`: step, generation id, model and provider that served it, input/output/cached tokens, reasoning tokens (part of the output tokens, where reported), cost, duration, finish reason. |
-| `tool_call` | Step, tool, arguments as the model wrote them, `status` (`ok`, `failed`, `refused`), the result's size before any cut, whether it was cut, duration. |
-| `answer` | The final text. |
-| `exit` | Why the run ended, as `reason`: `done`; `limit` with `which`; or `error` with a typed `error` (`{"kind":"provider","provider_error":"status","status":429,…}`, `{"kind":"cost_unreported"}`). And the totals: steps, tool calls, input and output tokens, cost. |
+| `start` | `version` (Jakkals's); `profile_hash`; `model` (as asked for); `tools`, the names offered in order, MCP tools with their prefix; `sandbox`, the shell's (`seatbelt`, `landlock`, `none`, or `null` when `shell` isn't offered); `limits`, those in force: `steps`, `wall_s`, `cost_nano_usd` (the profile's `cost_usd` in nano-dollars), `tokens`, `context_tokens`, `tool_output_bytes`, unset ones `null`; `transcript`, the file's absolute path, or `null` when none is written. |
+| `mcp_server` | One per MCP server, in the order its tools are offered. `server`, the profile's name for it; `server_name` and `server_version`, as the server reports them; `protocol_version`, the one agreed; `setup_ms`; `tools`, each offered tool exactly as the model sees it: `name`, `description`, `parameters` (a JSON Schema). |
+| `model_request` | `step`; `messages`, the number sent. Written as the request leaves, so a slow call shows as in flight and a run killed mid-call shows which call it died in. |
+| `model_call` | The reply to the `model_request` of the same `step`: `generation_id`; `model` and `provider`, those that served it (a router may pick another model than the one asked for); `input_tokens`, `output_tokens`; `cached_tokens`; `reasoning_tokens` (counted in `output_tokens`, not on top of them); `cost_nano_usd`; `duration_ms`; `finish_reason`. A call that fails has no `model_call`: the `exit` carries the error. |
+| `tool_call` | `step`; `tool`; `arguments`, a string exactly as the model wrote them, usually JSON; `status`: `ok`, `failed` (the tool ran and it failed) or `refused` (it never ran: a tool not offered, a path outside `--cwd`, a command the allowlist doesn't name); `result_bytes`, the result's size before any cut; `cut`; `duration_ms`. |
+| `answer` | `text`, the reply that ended the run, `""` when it had no text. Only when the run ends `done`. |
+| `exit` | `reason`: `done`; `limit`, with `which` naming the limit as the profile does (`steps`, `wall_s`, `cost_usd`, `tokens`, `context_tokens`); or `error`, with a typed `error`, below. And `totals`: `steps`, `tool_calls`, `input_tokens`, `output_tokens`, `cost_nano_usd` (`null` once any reply reported no cost, since a partial sum would understate the run). |
 
-A run with no `exit` line did not end cleanly and is void. Costs are
-in billionths of a US dollar (`cost_nano_usd`), integers, `null` where
-not reported.
+An `error` is one of:
+
+| `error` | Meaning |
+|---|---|
+| `{"kind":"provider","provider_error":"status","status":429,"body":"…"}` | The provider answered with a status other than 2xx. |
+| `{"kind":"provider","provider_error":"transport","detail":"…"}` | No answer: refused, reset, TLS. |
+| `{"kind":"provider","provider_error":"malformed","detail":"…"}` | A 2xx that isn't one completion. See [The provider](#the-provider). |
+| `{"kind":"cost_unreported"}` | `limits.cost_usd` is set and a reply reported no cost. |
+
+A provider that runs out of time is not an error: the run ends
+`limit` `wall_s`.
+
+A short run, with the `start` and `model_call` lines trimmed:
+
+```jsonl
+{"type":"start","version":"0.0.0","profile_hash":"sha256:…","model":"some/model","tools":["read","list"],"sandbox":null,"limits":{…},"transcript":null,"t_ms":0}
+{"type":"model_request","step":1,"messages":2,"t_ms":1}
+{"type":"model_call","step":1,"generation_id":"gen-…","input_tokens":812,"output_tokens":41,"cost_nano_usd":93000,"finish_reason":"tool_calls",…,"t_ms":1650}
+{"type":"tool_call","step":1,"tool":"read","arguments":"{\"path\":\"box.txt\"}","status":"ok","result_bytes":28,"cut":false,"duration_ms":0,"t_ms":1651}
+{"type":"model_request","step":2,"messages":4,"t_ms":1651}
+{"type":"model_call","step":2,…,"finish_reason":"stop","t_ms":2903}
+{"type":"answer","text":"The box holds three red marbles.","t_ms":2903}
+{"type":"exit","reason":"done","totals":{"steps":2,"tool_calls":1,"input_tokens":1690,"output_tokens":63,"cost_nano_usd":191000},"t_ms":2903}
+```
 
 ## The transcript
 
@@ -218,13 +250,14 @@ can branch without reading the events; the `exit` event says the rest.
 Any other status (a panic, a kill) means the run did not end cleanly;
 its events have no `exit` line.
 
-## Survivable failures (proposed)
+## Survivable failures
 
-Only these end in something other than an error exit, each with an
-event: a tool that fails (its error goes back to the model as the
-result); a tool call the allowlist refuses (the refusal goes back to
-the model); a limit reached (exit `limit`). Whether a provider error is
-retried, and how often, is a profile choice defaulting to no.
+A run goes on after only two kinds of failure, each with a `tool_call`
+event: a tool call that fails, and one that is refused. Either way the
+reason goes back to the model as the call's result. A limit reached
+ends the run as `limit`. Anything else ends it as `error`: nothing is
+retried. A retry, if one is ever wanted, would be a profile field, off
+by default, with an event each time it acts (**Later**, not designed).
 
 ## Context size
 
