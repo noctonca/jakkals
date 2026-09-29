@@ -1,12 +1,26 @@
 //! Jakkals: a small coding agent whose every model call, tool call and
 //! limit is written down. See docs/ARCHITECTURE.md for the design.
-//!
-//! Scaffold only: `run` parses its arguments and stops.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
+
+use jakkals::clock::MonotonicClock;
+use jakkals::events::{JsonLines, Outcome};
+use jakkals::profile::Profile;
+use jakkals::provider::http::HttpProvider;
+use jakkals::run::{Task, run};
+use jakkals::tools::NoTools;
+
+/// The process's exit status, one per way a run can end, so a caller
+/// can branch without reading the events. Documented in ARCHITECTURE.md.
+const EXIT_DONE: u8 = 0;
+/// The run never started: a bad profile, key or directory. clap uses
+/// the same status for bad arguments. No events are written.
+const EXIT_SETUP: u8 = 2;
+const EXIT_LIMIT: u8 = 3;
+const EXIT_ERROR: u8 = 4;
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -34,14 +48,62 @@ enum Command {
     },
 }
 
-fn main() -> ExitCode {
+// One thread: the loop is sequential, and nothing it awaits needs a
+// second one.
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
-        Command::Run { .. } => {
-            eprintln!("jakkals: `run` is not implemented yet");
-            ExitCode::FAILURE
-        }
+        Command::Run {
+            profile,
+            model,
+            cwd,
+            prompt,
+        } => match start(&profile, &model, &cwd, &prompt).await {
+            Ok(outcome) => ExitCode::from(match outcome {
+                Outcome::Done => EXIT_DONE,
+                Outcome::Limit { .. } => EXIT_LIMIT,
+                Outcome::Error { .. } => EXIT_ERROR,
+            }),
+            Err(message) => {
+                eprintln!("jakkals: {message}");
+                ExitCode::from(EXIT_SETUP)
+            }
+        },
     }
+}
+
+/// Everything a run needs is checked before its first event, so a run
+/// that starts has only the loop's ways to end.
+async fn start(profile: &Path, model: &str, cwd: &Path, prompt: &str) -> Result<Outcome, String> {
+    let profile = Profile::read(profile).map_err(|error| error.to_string())?;
+    // No tool reads the directory yet, but a run named with one that
+    // doesn't exist is a mistake worth stopping on now.
+    if !cwd.is_dir() {
+        return Err(format!("--cwd {} is not a directory", cwd.display()));
+    }
+    let config = profile
+        .http_config(|variable| std::env::var(variable).ok())
+        .map_err(|error| error.to_string())?;
+    let mut provider =
+        HttpProvider::new(config).map_err(|error| format!("the provider: {error}"))?;
+
+    let task = Task {
+        system_prompt: &profile.system_prompt,
+        prompt,
+        model,
+        profile_hash: &profile.hash,
+    };
+    let mut sink = JsonLines::new(std::io::stdout().lock());
+    Ok(run(
+        &task,
+        &profile.limits,
+        &mut provider,
+        &mut NoTools,
+        &MonotonicClock::start(),
+        &mut sink,
+    )
+    .await)
 }
 
 #[cfg(test)]

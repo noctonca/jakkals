@@ -28,15 +28,34 @@ allowlisted shell) plus whatever MCP servers the profile names.
 
 ## Status
 
-Scaffold only. The CLI parses `jakkals run` and stops. The design is
+Early. `jakkals run` works end to end against OpenRouter or a local
+server, but offers the model no tools yet: it can only answer. Local
+tools and MCP come next. The design is
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Running it
 
-```sh
-cargo run -- run --profile profile.toml --model <provider/model> \
-  --cwd <project> --prompt "<task>"
+A profile, say `openrouter.local.toml`:
+
+```toml
+[limits]
+steps = 30
+wall_s = 600
+cost_usd = 0.50
+
+[provider]
+api_key_env = "OPENROUTER_API_KEY"
 ```
+
+Then:
+
+```sh
+cargo run -- run --profile openrouter.local.toml --model <provider/model> \
+  --cwd <project> --prompt "<task>" | jq -c .
+```
+
+The events go to stdout as JSON lines and the exit status says how the
+run ended; both are described in the architecture.
 
 ## Licence
 

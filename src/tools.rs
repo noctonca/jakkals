@@ -51,3 +51,17 @@ pub enum ToolStatus {
     Failed,
     Refused,
 }
+
+/// No tools: what a run has until local tools and MCP are built. The
+/// loop refuses any call before it reaches here.
+pub struct NoTools;
+
+impl Tools for NoTools {
+    fn specs(&self) -> &[ToolSpec] {
+        &[]
+    }
+
+    async fn call(&mut self, call: &ToolCall, _deadline_ms: u64) -> ToolOutcome {
+        unreachable!("the loop refuses `{}`: no tool is offered", call.name)
+    }
+}

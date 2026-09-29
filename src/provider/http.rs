@@ -51,6 +51,22 @@ pub enum ConfigError {
     Client { detail: String },
 }
 
+impl std::fmt::Display for ConfigError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BaseUrl { url } => write!(formatter, "`{url}` is not an http or https URL"),
+            Self::ReservedParam { name } => {
+                write!(formatter, "params may not set `{name}`, which the run sets")
+            }
+            Self::Client { detail } => {
+                write!(formatter, "the HTTP client failed to build: {detail}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ConfigError {}
+
 pub struct HttpProvider {
     client: reqwest::Client,
     url: reqwest::Url,
