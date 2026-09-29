@@ -5,6 +5,7 @@ use crate::events::JsonLines;
 use crate::scripted::{
     KeptSink, ScriptedProvider, ScriptedTools, VirtualClock, answer, block_on, calls, reply,
 };
+use crate::tools::mcp::McpServerRecord;
 
 const TASK: Task<'static> = Task {
     system_prompt: "You are a test.",
@@ -74,6 +75,7 @@ fn kinds(events: &[Event]) -> Vec<&'static str> {
         .iter()
         .map(|event| match event {
             Event::Start { .. } => "start",
+            Event::McpServer(_) => "mcp_server",
             Event::ModelRequest { .. } => "model_request",
             Event::ModelCall { .. } => "model_call",
             Event::ToolCall { .. } => "tool_call",
@@ -548,4 +550,46 @@ fn the_context_limit_reads_the_reported_prompt_tokens() {
 fn cut_leaves_short_text_alone() {
     assert_eq!(cut("abc".to_owned(), 3), ("abc".to_owned(), false));
     assert_eq!(cut(String::new(), 0), (String::new(), false));
+}
+
+#[test]
+fn each_mcp_server_is_recorded_after_start_in_the_order_offered() {
+    let clock = VirtualClock::default();
+    let provider =
+        ScriptedProvider::new(&clock).then(Ok(answer("Done.", reply(10, 5, Some(1)))), 10);
+    let mut tools = ScriptedTools::new(&clock, &["alpha_look", "beta_find"]);
+    tools.servers = ["alpha", "beta"]
+        .iter()
+        .map(|server| McpServerRecord {
+            server: (*server).to_owned(),
+            server_name: None,
+            server_version: None,
+            protocol_version: "2025-06-18".to_owned(),
+            setup_ms: 5,
+            tools: Vec::new(),
+        })
+        .collect();
+
+    let ran = run_scripted(&TASK, &LIMITS, &clock, provider, tools);
+    assert_eq!(
+        kinds(&ran.events),
+        [
+            "start",
+            "mcp_server",
+            "mcp_server",
+            "model_request",
+            "model_call",
+            "answer",
+            "exit"
+        ]
+    );
+    let servers: Vec<&str> = ran
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            Event::McpServer(record) => Some(record.server.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(servers, ["alpha", "beta"]);
 }

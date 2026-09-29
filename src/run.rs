@@ -77,6 +77,9 @@ where
         sandbox: tools.sandbox(),
         limits: *limits,
     });
+    for server in tools.servers() {
+        run.emit(Event::McpServer(server));
+    }
 
     let mut messages = Vec::new();
     if !task.system_prompt.is_empty() {

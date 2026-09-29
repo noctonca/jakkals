@@ -37,6 +37,7 @@ fn minimal_profile_takes_the_documented_defaults() {
             },
             local_tools: Vec::new(),
             shell: None,
+            mcp: Vec::new(),
             // `shasum -a 256` of the same bytes.
             hash: "sha256:0ecfa70ca44c48c52c8b8636f358d73c955fb22d383c103433c2bdc5488a91cd"
                 .to_owned(),
@@ -227,169 +228,150 @@ fn values_the_harness_cant_run_with_are_refused() {
     }
 }
 
+const NOTES: &str = "[mcp.notes]\nurl = \"https://notes.example/mcp\"\ntools = [\"search\"]\n";
+
 #[test]
-fn capabilities_not_built_are_refused_not_ignored() {
-    let text = format!("{MINIMAL}[mcp.memory]\nurl = \"https://example.com/mcp\"\n");
-    assert_eq!(invalid(&text), ProfileError::NotBuilt { field: "mcp" });
+fn an_mcp_server_takes_the_documented_defaults() {
+    let profile = Profile::parse(&with_limits(NOTES)).expect("the profile is valid");
+    assert_eq!(
+        profile.mcp,
+        [McpSettings {
+            name: "notes".to_owned(),
+            url: "https://notes.example/mcp".to_owned(),
+            tools: vec!["search".to_owned()],
+            key: None,
+            call_timeout_s: 60,
+        }]
+    );
 }
 
 #[test]
-fn the_shell_takes_the_documented_defaults() {
-    let text = format!("{MINIMAL}[tools]\nlocal = [\"shell\"]\nshell_allow = [\"git log\"]\n");
+fn mcp_servers_come_ordered_by_name_with_their_tools_as_written() {
+    let text = with_limits(
+        "[mcp.zebra]\nurl = \"http://z.example/\"\ntools = [\"b\", \"a\"]\n\
+         [mcp.apple]\nurl = \"http://a.example/\"\ntools = [\"x\"]\n",
+    );
+    let profile = Profile::parse(&text).expect("the profile is valid");
+    let names: Vec<&str> = profile
+        .mcp
+        .iter()
+        .map(|server| server.name.as_str())
+        .collect();
+    assert_eq!(names, ["apple", "zebra"]);
+    assert_eq!(profile.mcp[1].tools, ["b", "a"]);
+}
+
+#[test]
+fn an_mcp_key_goes_in_authorization_unless_a_header_is_named() {
+    let text = with_limits(&format!("{NOTES}key_env = \"NOTES_KEY\"\n"));
     let profile = Profile::parse(&text).expect("the profile is valid");
     assert_eq!(
-        profile.shell,
-        Some(ShellSettings {
-            allow: vec![vec!["git".to_owned(), "log".to_owned()]],
-            // The system's own: seatbelt on macOS, landlock on Linux.
-            sandbox: Sandbox::native().expect("tests run where Jakkals has a sandbox"),
-            sandbox_read: Vec::new(),
-            timeout_s: 30,
+        profile.mcp[0].key,
+        Some(KeySettings {
+            env: "NOTES_KEY".to_owned(),
+            header: "authorization".to_owned()
         })
     );
-}
-
-#[test]
-fn shell_settings_the_harness_cant_run_with_are_refused() {
-    let shell = |extra: &str| {
-        format!("{MINIMAL}[tools]\nlocal = [\"shell\"]\nshell_allow = [\"git log\"]\n{extra}\n")
-    };
-    let without_shell = |extra: &str| format!("{MINIMAL}[tools]\nlocal = [\"read\"]\n{extra}\n");
-    let cases = [
-        (
-            format!("{MINIMAL}[tools]\nlocal = [\"shell\"]\n"),
-            "tools.shell_allow",
-        ),
-        (
-            format!("{MINIMAL}[tools]\nlocal = [\"shell\"]\nshell_allow = []\n"),
-            "tools.shell_allow",
-        ),
-        (
-            format!("{MINIMAL}[tools]\nlocal = [\"shell\"]\nshell_allow = [\"git log | head\"]\n"),
-            "tools.shell_allow",
-        ),
-        (
-            format!("{MINIMAL}[tools]\nlocal = [\"shell\"]\nshell_allow = [\"  \"]\n"),
-            "tools.shell_allow",
-        ),
-        (
-            format!("{MINIMAL}[tools]\nlocal = [\"shell\"]\nshell_allow = [\"git 'log\"]\n"),
-            "tools.shell_allow",
-        ),
-        (shell("shell_timeout_s = 0"), "tools.shell_timeout_s"),
-        (
-            shell("sandbox_read = [\"opt/homebrew\"]"),
-            "tools.sandbox_read",
-        ),
-        (
-            shell("sandbox_read = [\"/opt/../etc\"]"),
-            "tools.sandbox_read",
-        ),
-        (
-            shell("sandbox = \"none\"\nsandbox_read = [\"/opt/homebrew\"]"),
-            "tools.sandbox_read",
-        ),
-        (
-            without_shell("shell_allow = [\"git log\"]"),
-            "tools.shell_allow",
-        ),
-        (without_shell("sandbox = \"none\""), "tools.sandbox"),
-        (
-            without_shell("sandbox_read = [\"/opt\"]"),
-            "tools.sandbox_read",
-        ),
-        (
-            without_shell("shell_timeout_s = 5"),
-            "tools.shell_timeout_s",
-        ),
-    ];
-    for (text, field) in cases {
-        let error = invalid(&text);
-        assert!(
-            matches!(error, ProfileError::Invalid { field: named, .. } if named == field),
-            "{text:?}: invalid {field}, not {error:?}"
-        );
-    }
-    let error = invalid(&shell("sandbox = \"container\""));
-    assert!(
-        matches!(&error, ProfileError::Toml { detail } if detail.contains("unknown variant `container`")),
-        "{error:?}"
+    let text = with_limits(&format!(
+        "{NOTES}key_env = \"NOTES_KEY\"\nkey_header = \"X-Api-Key\"\n"
+    ));
+    let profile = Profile::parse(&text).expect("the profile is valid");
+    assert_eq!(
+        profile.mcp[0].key.as_ref().map(|key| key.header.as_str()),
+        Some("x-api-key")
     );
 }
 
 #[test]
-fn key_comes_from_the_named_variable() {
-    let text = format!("{MINIMAL}[provider]\napi_key_env = \"TEST_PROVIDER_KEY\"\n");
+fn an_mcp_key_is_read_from_its_variable() {
+    let text = with_limits(&format!("{NOTES}key_env = \"NOTES_KEY\"\n"));
     let profile = Profile::parse(&text).expect("the profile is valid");
-    let env_with = |value: Option<&'static str>| {
-        move |name: &str| {
-            assert_eq!(name, "TEST_PROVIDER_KEY");
-            value.map(str::to_owned)
-        }
-    };
-
-    let config = profile
-        .http_config(env_with(Some("test-key")))
-        .expect("the key is set");
-    assert_eq!(config.api_key.as_deref(), Some("test-key"));
-    assert_eq!(config.base_url, OPENROUTER_BASE_URL);
-    for unset in [None, Some("")] {
+    let server = &profile.mcp[0];
+    let key = mcp_key(server, |name| {
+        assert_eq!(name, "NOTES_KEY");
+        Some("secret".to_owned())
+    });
+    assert_eq!(key, Ok(Some("secret".to_owned())));
+    for unset in [None, Some(String::new())] {
         assert_eq!(
-            profile.http_config(env_with(unset)).err(),
-            Some(ProfileError::KeyUnset {
-                variable: "TEST_PROVIDER_KEY".to_owned()
+            mcp_key(server, |_| unset.clone()),
+            Err(ProfileError::KeyUnset {
+                field: "mcp.notes.key_env".to_owned(),
+                variable: "NOTES_KEY".to_owned()
             })
         );
     }
-}
-
-#[test]
-fn no_key_variable_sends_no_key_and_reads_no_environment() {
-    let profile = Profile::parse(MINIMAL).expect("the profile is valid");
-    let config = profile
-        .http_config(|name| panic!("read {name} from the environment"))
-        .expect("no key is needed");
-    assert_eq!(config.api_key, None);
-}
-
-/// A file in the system's temporary directory, removed when dropped.
-struct TempFile(std::path::PathBuf);
-
-impl TempFile {
-    fn new(name: &str, bytes: &[u8]) -> Self {
-        let path = std::env::temp_dir().join(format!("jakkals-test-{}-{name}", std::process::id()));
-        std::fs::write(&path, bytes).expect("temp file is writable");
-        Self(path)
-    }
-}
-
-impl Drop for TempFile {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
-}
-
-#[test]
-fn read_takes_a_file_and_refuses_what_isnt_a_profile() {
-    let file = TempFile::new("minimal.toml", MINIMAL.as_bytes());
+    let without = Profile::parse(&with_limits(NOTES)).expect("the profile is valid");
     assert_eq!(
-        Profile::read(&file.0),
-        Profile::parse(MINIMAL),
-        "reading a file is parsing its text"
+        mcp_key(&without.mcp[0], |name| panic!("read {name}")),
+        Ok(None)
     );
+}
 
-    let not_utf8 = TempFile::new("latin1.toml", b"system_prompt = \"caf\xe9\"\n");
-    let huge = TempFile::new(
-        "huge.toml",
-        &vec![b'#'; usize::try_from(PROFILE_CAP_BYTES).expect("fits usize") + 1],
-    );
-    let missing = std::env::temp_dir().join("jakkals-test-no-such-profile.toml");
-    for path in [&not_utf8.0, &huge.0, &missing] {
-        let error = Profile::read(path).expect_err("the file is refused");
+#[test]
+fn bad_mcp_servers_are_refused_naming_the_field() {
+    let server = |name: &str, extra: &str| {
+        with_limits(&format!(
+            "[mcp.{name}]\nurl = \"https://notes.example/mcp\"\n{extra}"
+        ))
+    };
+    let tools = "tools = [\"search\"]\n";
+    let cases: [(String, Option<&str>); 13] = [
+        (server("Notes", tools), None),
+        (server("\"\"", tools), None),
+        (server("a-very-long-server-name", tools), None),
+        (server("notes_2", tools), None),
+        (
+            with_limits("[mcp.notes]\nurl = \"ftp://notes.example/\"\ntools = [\"search\"]"),
+            Some("url"),
+        ),
+        (server("notes", "tools = []\n"), Some("tools")),
+        (server("notes", "tools = [\"a\", \"a\"]\n"), Some("tools")),
+        (server("notes", "tools = [\"read.note\"]\n"), Some("tools")),
+        (
+            server("notes", &format!("tools = [\"{}\"]\n", "t".repeat(60))),
+            Some("tools"),
+        ),
+        (
+            server("notes", &format!("{tools}key_header = \"x-key\"\n")),
+            Some("key_header"),
+        ),
+        (
+            server("notes", &format!("{tools}key_env = \"\"\n")),
+            Some("key_env"),
+        ),
+        (
+            server(
+                "notes",
+                &format!("{tools}key_env = \"K\"\nkey_header = \"mcp-session-id\"\n"),
+            ),
+            Some("key_header"),
+        ),
+        (
+            server("notes", &format!("{tools}call_timeout_s = 0\n")),
+            Some("call_timeout_s"),
+        ),
+    ];
+    for (text, field) in cases {
+        match invalid(&text) {
+            ProfileError::InvalidServer { field: found, .. } => {
+                assert_eq!(found, field, "{text:?}");
+            }
+            other => panic!("{text:?}: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn an_mcp_server_needs_its_url_and_tools_and_no_unknown_field() {
+    for extra in [
+        "[mcp.notes]\ntools = [\"search\"]",
+        "[mcp.notes]\nurl = \"https://notes.example/mcp\"",
+        "[mcp.notes]\nurl = \"https://notes.example/mcp\"\ntools = [\"search\"]\ndeny = []",
+    ] {
         assert!(
-            matches!(error, ProfileError::Read { .. }),
-            "{}: a read fault, not {error:?}",
-            path.display()
+            matches!(invalid(&with_limits(extra)), ProfileError::Toml { .. }),
+            "{extra:?}"
         );
     }
 }
