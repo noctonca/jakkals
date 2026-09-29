@@ -6,6 +6,7 @@
 //! [`events::Sink`] and a [`transcript::Transcript`], so tests drive it
 //! with canned replies and virtual time.
 
+pub mod build_info;
 pub mod clock;
 pub mod conversation;
 pub mod events;

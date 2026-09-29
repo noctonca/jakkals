@@ -4,6 +4,7 @@
 
 use serde::Serialize;
 
+use crate::build_info::Build;
 use crate::clock::Clock;
 use crate::conversation::{Message, ToolCall};
 use crate::events::{Event, LimitKind, Outcome, Record, RunError, Sink, Totals};
@@ -13,6 +14,8 @@ use crate::transcript::{Entry, Line, Transcript};
 
 /// What one run is asked to do.
 pub struct Task<'a> {
+    /// The build running it, recorded in the `start` event.
+    pub build: Build,
     /// Sent verbatim as the system message; empty means none is sent.
     pub system_prompt: &'a str,
     pub prompt: &'a str,
@@ -78,7 +81,9 @@ where
         },
     };
     run.emit(Event::Start {
-        version: env!("CARGO_PKG_VERSION").to_owned(),
+        version: task.build.version.to_owned(),
+        commit: task.build.commit.map(str::to_owned),
+        dirty: task.build.dirty,
         profile_hash: task.profile_hash.to_owned(),
         model: task.model.to_owned(),
         tools: tools.specs().iter().map(|spec| spec.name.clone()).collect(),

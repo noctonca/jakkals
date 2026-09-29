@@ -187,6 +187,10 @@ fn an_answer_ends_the_run_done_with_status_0() {
             .is_some_and(|hash| hash.starts_with("sha256:") && hash.len() == 7 + 64),
         "{start}"
     );
+    let build = jakkals::build_info::THIS;
+    assert_eq!(start["version"], build.version);
+    assert_eq!(start["commit"], json!(build.commit));
+    assert_eq!(start["dirty"], json!(build.dirty));
     assert_eq!(start["tools"], json!([]));
     assert_eq!(start["sandbox"], Value::Null);
     assert_eq!(ran.events[3]["text"], "It is empty.");

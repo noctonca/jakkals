@@ -379,6 +379,7 @@ fn the_loop_hands_a_read_back_to_the_model() {
         .then(Ok(read), 10)
         .then(Ok(answer("A cat.", reply(120, 5, None))), 10);
     let task = Task {
+        build: crate::build_info::THIS,
         system_prompt: "",
         prompt: "What is in the box?",
         model: "test/model",
