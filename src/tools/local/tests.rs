@@ -5,7 +5,7 @@ use std::os::unix::fs::symlink;
 
 use super::*;
 use crate::scripted::{TempDir, block_on};
-use crate::tools::ToolStatus;
+use crate::tools::{Cause, Failure, Refusal};
 
 const ALL: [LocalTool; 3] = [LocalTool::Read, LocalTool::List, LocalTool::Search];
 
@@ -36,9 +36,9 @@ fn ok(outcome: ToolOutcome) -> String {
     }
 }
 
-/// Asserts the outcome's status and that its text holds `says`.
-fn assert_outcome(outcome: ToolOutcome, status: ToolStatus, says: &str) {
-    assert_eq!(outcome.status(), status, "{outcome:?}");
+/// Asserts the outcome's cause and that its text holds `says`.
+fn assert_outcome(outcome: ToolOutcome, cause: Cause, says: &str) {
+    assert_eq!(outcome.cause(), Some(cause), "{outcome:?}");
     let text = outcome.into_text();
     assert!(text.contains(says), "{text:?} says {says:?}");
 }
@@ -124,32 +124,58 @@ fn read_fails_on_what_it_cant_read() {
     let mut tools = tools(&dir);
 
     let cases = [
-        (json!({"path": "nothing.txt"}), "doesn't exist"),
-        (json!({"path": "empty"}), "is a directory"),
-        (json!({"path": "latin1.txt"}), "isn't UTF-8"),
+        (
+            json!({"path": "nothing.txt"}),
+            Failure::NotFound,
+            "doesn't exist",
+        ),
+        (
+            json!({"path": "empty"}),
+            Failure::WrongType,
+            "is a directory",
+        ),
+        (
+            json!({"path": "latin1.txt"}),
+            Failure::NotText,
+            "isn't UTF-8",
+        ),
         (
             json!({"path": "huge.txt"}),
+            Failure::TooLarge,
             "1048577 bytes, past read's cap",
         ),
-        (json!({"path": "box.txt", "start_line": 3}), "has 2 lines"),
-        (json!({"path": "box.txt", "start_line": 0}), "counts from 1"),
-        (json!({"path": "box.txt", "line_count": 0}), "at least 1"),
+        (
+            json!({"path": "box.txt", "start_line": 3}),
+            Failure::Arguments,
+            "has 2 lines",
+        ),
+        (
+            json!({"path": "box.txt", "start_line": 0}),
+            Failure::Arguments,
+            "counts from 1",
+        ),
+        (
+            json!({"path": "box.txt", "line_count": 0}),
+            Failure::Arguments,
+            "at least 1",
+        ),
         (
             json!({"path": "box.txt", "lines": 3}),
+            Failure::Arguments,
             "unknown field `lines`",
         ),
-        (json!({}), "missing field `path`"),
+        (json!({}), Failure::Arguments, "missing field `path`"),
     ];
-    for (arguments, says) in cases {
+    for (arguments, failure, says) in cases {
         assert_outcome(
             call(&mut tools, "read", arguments),
-            ToolStatus::Failed,
+            Cause::Failed(failure),
             says,
         );
     }
     assert_outcome(
         call_by(&mut tools, "read", "box.txt", DEADLINE_MS),
-        ToolStatus::Failed,
+        Cause::Failed(Failure::Arguments),
         "the arguments aren't valid",
     );
 }
@@ -178,7 +204,11 @@ fn paths_outside_the_working_directory_are_refused() {
             ("list", json!({"path": path})),
             ("search", json!({"pattern": "yours", "path": path})),
         ] {
-            assert_outcome(call(&mut tools, tool, arguments), ToolStatus::Refused, says);
+            assert_outcome(
+                call(&mut tools, tool, arguments),
+                Cause::Refused(Refusal::OutsideCwd),
+                says,
+            );
         }
     }
     assert_eq!(
@@ -226,12 +256,12 @@ fn list_walks_sorted_skipping_hidden_and_ignored() {
     );
     assert_outcome(
         call(&mut tools, "list", json!({"path": "b.txt"})),
-        ToolStatus::Failed,
+        Cause::Failed(Failure::WrongType),
         "is a file",
     );
     assert_outcome(
         call(&mut tools, "list", json!({"depth": 0})),
-        ToolStatus::Failed,
+        Cause::Failed(Failure::Arguments),
         "at least 1",
     );
 }
@@ -284,12 +314,12 @@ fn search_returns_each_matching_line() {
     );
     assert_outcome(
         call(&mut tools, "search", json!({"pattern": "("})),
-        ToolStatus::Failed,
+        Cause::Failed(Failure::Arguments),
         "the pattern isn't valid",
     );
     assert_outcome(
         call(&mut tools, "search", json!({"path": "src"})),
-        ToolStatus::Failed,
+        Cause::Failed(Failure::Arguments),
         "missing field `pattern`",
     );
 }
@@ -347,12 +377,12 @@ fn a_passed_deadline_stops_a_walk() {
 
     assert_outcome(
         call_by(&mut tools, "list", "{}", 0),
-        ToolStatus::Failed,
+        Cause::Failed(Failure::Deadline),
         "deadline passed; `list` stopped",
     );
     assert_outcome(
         call_by(&mut tools, "search", r#"{"pattern":"cat"}"#, 0),
-        ToolStatus::Failed,
+        Cause::Failed(Failure::Deadline),
         "deadline passed; `search` stopped",
     );
 }

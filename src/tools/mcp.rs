@@ -23,7 +23,7 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::conversation::ToolSpec;
-use crate::tools::ToolOutcome;
+use crate::tools::{Failure, ToolOutcome};
 
 /// The default for `mcp.<name>.call_timeout_s`: a choice, twice the
 /// shell's, since a server may search or fetch on the model's behalf;
@@ -338,7 +338,7 @@ impl McpServer {
             .expect("the tool box calls only tools this server offers");
         let arguments = match arguments_object(arguments) {
             Ok(arguments) => arguments,
-            Err(problem) => return ToolOutcome::Failed(problem),
+            Err(problem) => return ToolOutcome::Failed(Failure::Arguments, problem),
         };
         let timeout_ms = self.call_timeout_ms.min(deadline_ms);
         let mut params = CallToolRequestParams::new(tool.clone());
@@ -358,24 +358,39 @@ impl McpServer {
         };
         match reply {
             Ok(ServerResult::CallToolResult(result)) => outcome(result),
-            Ok(ServerResult::InputRequiredResult(_)) => ToolOutcome::Failed(
+            Ok(ServerResult::InputRequiredResult(_))
+            | Err(ServiceError::InputRequiredRoundsExceeded { .. }) => ToolOutcome::Failed(
+                Failure::InputRequired,
                 "jakkals: the server asked for input, which Jakkals doesn't give".to_owned(),
             ),
             Ok(ServerResult::CreateTaskResult(_)) => ToolOutcome::Failed(
+                Failure::Task,
                 "jakkals: the server ran the call as a task, which Jakkals doesn't follow"
                     .to_owned(),
             ),
-            Ok(_) => ToolOutcome::Failed(
+            Ok(_) | Err(ServiceError::UnexpectedResponse) => ToolOutcome::Failed(
+                Failure::UnexpectedReply,
                 "jakkals: the server answered the call with something else".to_owned(),
             ),
-            Err(ServiceError::McpError(error)) => {
-                ToolOutcome::Failed(format!("MCP error {}: {}", error.code.0, error.message))
-            }
-            Err(ServiceError::Timeout { .. }) => ToolOutcome::Failed(format!(
-                "jakkals: the call ran past its {} ms and was cancelled",
-                timeout_ms
-            )),
-            Err(error) => ToolOutcome::Failed(format!("jakkals: the call failed: {error}")),
+            Err(ServiceError::McpError(error)) => ToolOutcome::Failed(
+                Failure::McpError { code: error.code.0 },
+                format!("MCP error {}: {}", error.code.0, error.message),
+            ),
+            Err(ServiceError::Timeout { .. }) => ToolOutcome::Failed(
+                // Whichever time was shorter ran out; on a tie, the
+                // run's deadline, as in the shell.
+                if self.call_timeout_ms < deadline_ms {
+                    Failure::Timeout
+                } else {
+                    Failure::Deadline
+                },
+                format!("jakkals: the call ran past its {timeout_ms} ms and was cancelled"),
+            ),
+            // A lost or closed transport, or an error `rmcp` adds later.
+            Err(error) => ToolOutcome::Failed(
+                Failure::Connection,
+                format!("jakkals: the call failed: {error}"),
+            ),
         }
     }
 }
@@ -419,7 +434,7 @@ fn outcome(result: CallToolResult) -> ToolOutcome {
     }
     let text = parts.join("\n");
     if result.is_error == Some(true) {
-        ToolOutcome::Failed(text)
+        ToolOutcome::Failed(Failure::IsError, text)
     } else {
         ToolOutcome::Ok(text)
     }

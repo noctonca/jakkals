@@ -373,10 +373,24 @@ fn call_search(
     arguments: &str,
     deadline_ms: u64,
 ) -> (ToolOutcome, Vec<Seen>) {
+    call_search_timed(call, arguments, deadline_ms, CALL_TIMEOUT_S_DEFAULT)
+}
+
+/// As [`call_search`], with the server's own `call_timeout_s`.
+fn call_search_timed(
+    call: impl Fn(&Value) -> Answer + Send + Sync + 'static,
+    arguments: &str,
+    deadline_ms: u64,
+    call_timeout_s: u32,
+) -> (ToolOutcome, Vec<Seen>) {
     let (address, seen) = notes_server(call);
     let runtime = runtime();
+    let settings = McpSettings {
+        call_timeout_s,
+        ..settings(address, &["search"])
+    };
     let server = runtime
-        .block_on(McpServer::connect(&settings(address, &["search"]), None))
+        .block_on(McpServer::connect(&settings, None))
         .expect("the server sets up");
     let outcome = runtime.block_on(server.call("notes_search", arguments, deadline_ms));
     drop(server);
@@ -413,7 +427,10 @@ fn arguments_that_are_not_an_object_fail_before_the_server_sees_them() {
     let (outcome, seen) = call_search(|_| panic!("not called"), "[1, 2]", 5000);
     assert_eq!(
         outcome,
-        ToolOutcome::Failed("the arguments must be a JSON object".to_owned())
+        ToolOutcome::Failed(
+            Failure::Arguments,
+            "the arguments must be a JSON object".to_owned()
+        )
     );
     assert!(
         seen.iter()
@@ -433,7 +450,10 @@ fn a_result_marked_as_an_error_fails() {
         "{}",
         5000,
     );
-    assert_eq!(outcome, ToolOutcome::Failed("no such note".to_owned()));
+    assert_eq!(
+        outcome,
+        ToolOutcome::Failed(Failure::IsError, "no such note".to_owned())
+    );
 }
 
 #[test]
@@ -441,16 +461,22 @@ fn an_mcp_error_fails_with_its_code_and_message() {
     let (outcome, _) = call_search(|_| Answer::Error(-32602, "q is required"), "{}", 5000);
     assert_eq!(
         outcome,
-        ToolOutcome::Failed("MCP error -32602: q is required".to_owned())
+        ToolOutcome::Failed(
+            Failure::McpError { code: -32602 },
+            "MCP error -32602: q is required".to_owned()
+        )
     );
 }
 
 #[test]
-fn a_call_past_its_time_fails_and_is_cancelled() {
+fn a_call_past_the_deadline_fails_and_is_cancelled() {
     let (outcome, seen) = call_search(|_| Answer::Stall(1000), "{}", 200);
     assert_eq!(
         outcome,
-        ToolOutcome::Failed("jakkals: the call ran past its 200 ms and was cancelled".to_owned())
+        ToolOutcome::Failed(
+            Failure::Deadline,
+            "jakkals: the call ran past its 200 ms and was cancelled".to_owned()
+        )
     );
     let call_id = seen
         .iter()
@@ -464,6 +490,18 @@ fn a_call_past_its_time_fails_and_is_cancelled() {
             && request.body["params"]["requestId"] == call_id
     });
     assert!(cancelled, "the server was told the call is cancelled");
+}
+
+#[test]
+fn a_call_past_its_own_timeout_fails_as_a_timeout() {
+    let (outcome, _) = call_search_timed(|_| Answer::Stall(3000), "{}", 5000, 1);
+    assert_eq!(
+        outcome,
+        ToolOutcome::Failed(
+            Failure::Timeout,
+            "jakkals: the call ran past its 1000 ms and was cancelled".to_owned()
+        )
+    );
 }
 
 fn result(value: Value) -> CallToolResult {

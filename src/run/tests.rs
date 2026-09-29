@@ -6,6 +6,7 @@ use crate::scripted::{
     KeptSink, ScriptedProvider, ScriptedTools, VirtualClock, answer, block_on, calls, reply,
 };
 use crate::tools::mcp::McpServerRecord;
+use crate::tools::{Cause, Failure};
 use crate::transcript::{JsonLinesTranscript, NoTranscript};
 
 const TASK: Task<'static> = Task {
@@ -131,7 +132,7 @@ fn the_event_stream_has_the_documented_shape() {
         r#"{"type":"start","version":"9.8.7","commit":"0123456789abcdef0123456789abcdef01234567","dirty":false,"profile_hash":"hash","model":"test/model","tools":["read"],"sandbox":null,"limits":{"steps":10,"wall_s":60,"cost_nano_usd":null,"tokens":null,"context_tokens":null,"tool_output_bytes":1000},"transcript":null,"t_ms":0}"#.to_owned(),
         r#"{"type":"model_request","step":1,"messages":2,"t_ms":0}"#.to_owned(),
         r#"{"type":"model_call","step":1,"generation_id":"gen-1","model":"test/model-served","provider":"TestCloud","input_tokens":100,"output_tokens":10,"cached_tokens":null,"reasoning_tokens":null,"cost_nano_usd":1500,"duration_ms":250,"finish_reason":"tool_calls","t_ms":250}"#.to_owned(),
-        r#"{"type":"tool_call","step":1,"tool":"read","arguments":"{}","status":"ok","result_bytes":5,"cut":false,"duration_ms":20,"t_ms":270}"#.to_owned(),
+        r#"{"type":"tool_call","step":1,"tool":"read","arguments":"{}","status":"ok","cause":null,"result_bytes":5,"cut":false,"duration_ms":20,"t_ms":270}"#.to_owned(),
         r#"{"type":"model_request","step":2,"messages":4,"t_ms":270}"#.to_owned(),
         r#"{"type":"model_call","step":2,"generation_id":null,"model":null,"provider":null,"input_tokens":130,"output_tokens":5,"cached_tokens":null,"reasoning_tokens":null,"cost_nano_usd":2000,"duration_ms":300,"finish_reason":"stop","t_ms":570}"#.to_owned(),
         r#"{"type":"answer","text":"A cat.","t_ms":570}"#.to_owned(),
@@ -234,7 +235,12 @@ fn a_call_to_a_tool_not_offered_is_refused_and_the_run_goes_on() {
     assert!(ran.tools.seen.is_empty(), "the tool set never saw the call");
     assert!(ran.events.iter().any(|event| matches!(
         event,
-        Event::ToolCall { tool, status: ToolStatus::Refused, .. } if tool == "delete"
+        Event::ToolCall {
+            tool,
+            status: ToolStatus::Refused,
+            cause: Some(Cause::Refused(Refusal::NotOffered)),
+            ..
+        } if tool == "delete"
     )));
     assert_eq!(
         ran.provider.seen[1].messages.last(),
@@ -252,19 +258,34 @@ fn failed_and_refused_tool_outcomes_go_back_to_the_model() {
         .then(Ok(calls(&["read", "shell"], reply(10, 1, None))), 1)
         .then(Ok(answer("ok", reply(20, 1, None))), 1);
     let tools = ScriptedTools::new(&clock, &["read", "shell"])
-        .then(ToolOutcome::Failed("no such file".to_owned()), 1)
-        .then(ToolOutcome::Refused("not on the allowlist".to_owned()), 1);
+        .then(
+            ToolOutcome::Failed(Failure::NotFound, "no such file".to_owned()),
+            1,
+        )
+        .then(
+            ToolOutcome::Refused(Refusal::NotAllowed, "not on the allowlist".to_owned()),
+            1,
+        );
     let ran = run_scripted(&TASK, &LIMITS, &clock, provider, tools);
 
-    let statuses: Vec<ToolStatus> = ran
+    let statuses: Vec<(ToolStatus, Option<Cause>)> = ran
         .events
         .iter()
         .filter_map(|event| match event {
-            Event::ToolCall { status, .. } => Some(*status),
+            Event::ToolCall { status, cause, .. } => Some((*status, *cause)),
             _ => None,
         })
         .collect();
-    assert_eq!(statuses, [ToolStatus::Failed, ToolStatus::Refused]);
+    assert_eq!(
+        statuses,
+        [
+            (ToolStatus::Failed, Some(Cause::Failed(Failure::NotFound))),
+            (
+                ToolStatus::Refused,
+                Some(Cause::Refused(Refusal::NotAllowed))
+            ),
+        ]
+    );
     let texts: Vec<&str> = ran.provider.seen[1]
         .messages
         .iter()

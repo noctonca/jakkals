@@ -7,9 +7,9 @@ use serde::Serialize;
 
 use crate::provider::ProviderError;
 use crate::run::Limits;
-use crate::tools::ToolStatus;
 use crate::tools::mcp::McpServerRecord;
 use crate::tools::shell::Sandbox;
+use crate::tools::{Cause, ToolStatus};
 
 /// An event with the run-relative time it happened at.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -67,6 +67,8 @@ pub enum Event {
         tool: String,
         arguments: String,
         status: ToolStatus,
+        /// Why the call failed or was refused; `None` when it is `ok`.
+        cause: Option<Cause>,
         /// The result's size before any cut.
         result_bytes: u64,
         cut: bool,

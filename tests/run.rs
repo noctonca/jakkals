@@ -243,6 +243,7 @@ fn a_call_to_a_tool_not_offered_is_refused_and_the_run_goes_on() {
         ]
     );
     assert_eq!(ran.events[3]["status"], "refused");
+    assert_eq!(ran.events[3]["cause"], json!({"kind": "not_offered"}));
 }
 
 #[test]
@@ -258,6 +259,7 @@ fn a_local_tool_runs_in_the_working_directory() {
     let tool_call = &ran.events[3];
     assert_eq!(tool_call["tool"], "list");
     assert_eq!(tool_call["status"], "ok");
+    assert_eq!(tool_call["cause"], Value::Null);
     // The profile and the box: the listing the model got back.
     assert_eq!(tool_call["result_bytes"], "box.txt\nprofile.toml\n".len());
 }
@@ -285,6 +287,7 @@ fn the_shell_runs_an_allowed_command_and_the_start_names_its_sandbox() {
     assert_eq!(ran.events[3]["status"], "ok");
     assert_eq!(ran.events[3]["result_bytes"], "hello\n".len());
     assert_eq!(ran.events[6]["status"], "refused");
+    assert_eq!(ran.events[6]["cause"], json!({"kind": "not_allowed"}));
     assert!(dir.0.join("profile.toml").exists());
 }
 

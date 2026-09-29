@@ -5,7 +5,7 @@ use super::*;
 use crate::conversation::ToolCall;
 use crate::scripted::{TempDir, block_on};
 use crate::tools::local::{LocalTool, LocalTools};
-use crate::tools::{ToolOutcome, ToolStatus, Tools};
+use crate::tools::{Cause, Failure, Refusal, ToolOutcome, Tools};
 
 /// Time enough for any command here; the deadline has its own test.
 const DEADLINE_MS: u64 = 60_000;
@@ -50,9 +50,23 @@ fn run(tools: &mut LocalTools, command: &str) -> ToolOutcome {
     )
 }
 
-/// Asserts the outcome's status and that its text holds `says`.
-fn assert_outcome(outcome: ToolOutcome, status: ToolStatus, says: &str) {
-    assert_eq!(outcome.status(), status, "{outcome:?}");
+/// Asserts the outcome's cause and that its text holds `says`.
+fn assert_outcome(outcome: ToolOutcome, cause: Cause, says: &str) {
+    assert_eq!(outcome.cause(), Some(cause), "{outcome:?}");
+    let text = outcome.into_text();
+    assert!(text.contains(says), "{text:?} says {says:?}");
+}
+
+/// Asserts the command exited with a status other than 0, which
+/// differs between systems, and that its text holds `says`.
+fn assert_exit_failed(outcome: ToolOutcome, says: &str) {
+    assert!(
+        matches!(
+            outcome.cause(),
+            Some(Cause::Failed(Failure::ExitStatus { status })) if status != 0
+        ),
+        "{outcome:?}"
+    );
     let text = outcome.into_text();
     assert!(text.contains(says), "{text:?} says {says:?}");
 }
@@ -174,20 +188,25 @@ fn commands_outside_the_allowlist_or_needing_a_shell_are_refused() {
     let cases = [
         (
             "git push",
+            Refusal::NotAllowed,
             "isn't allowed; allowed commands begin with: git log, echo",
         ),
-        ("git logfoo", "isn't allowed"),
-        ("git -C / log", "isn't allowed"),
-        ("gitlog", "isn't allowed"),
-        ("echo a | wc", "holds `|`; there is no shell"),
-        ("echo $HOME", "holds `$`"),
-        ("echo *.rs", "holds `*`"),
-        ("echo a > out.txt", "holds `>`"),
-        ("echo a && echo b", "holds `&`"),
-        ("echo a\necho b", "holds `\\n`"),
+        ("git logfoo", Refusal::NotAllowed, "isn't allowed"),
+        ("git -C / log", Refusal::NotAllowed, "isn't allowed"),
+        ("gitlog", Refusal::NotAllowed, "isn't allowed"),
+        (
+            "echo a | wc",
+            Refusal::ShellSyntax,
+            "holds `|`; there is no shell",
+        ),
+        ("echo $HOME", Refusal::ShellSyntax, "holds `$`"),
+        ("echo *.rs", Refusal::ShellSyntax, "holds `*`"),
+        ("echo a > out.txt", Refusal::ShellSyntax, "holds `>`"),
+        ("echo a && echo b", Refusal::ShellSyntax, "holds `&`"),
+        ("echo a\necho b", Refusal::ShellSyntax, "holds `\\n`"),
     ];
-    for (command, says) in cases {
-        assert_outcome(run(&mut tools, command), ToolStatus::Refused, says);
+    for (command, refusal, says) in cases {
+        assert_outcome(run(&mut tools, command), Cause::Refused(refusal), says);
     }
     assert!(
         !dir.root.join("out.txt").exists(),
@@ -195,12 +214,12 @@ fn commands_outside_the_allowlist_or_needing_a_shell_are_refused() {
     );
     assert_outcome(
         run(&mut tools, "echo 'open"),
-        ToolStatus::Failed,
+        Cause::Failed(Failure::Arguments),
         "doesn't close",
     );
     assert_outcome(
         run_by(&mut tools, r#"{"cmd":"echo"}"#, DEADLINE_MS),
-        ToolStatus::Failed,
+        Cause::Failed(Failure::Arguments),
         "the arguments aren't valid",
     );
 }
@@ -214,7 +233,13 @@ fn a_failing_command_returns_its_output_and_status() {
     );
 
     let outcome = run(&mut tools, "ls no-such-file");
-    assert_eq!(outcome.status(), ToolStatus::Failed);
+    assert!(
+        matches!(
+            outcome.cause(),
+            Some(Cause::Failed(Failure::ExitStatus { status })) if status != 0
+        ),
+        "{outcome:?}"
+    );
     let text = outcome.into_text();
     assert!(text.starts_with("[jakkals: stderr]\n"), "{text:?}");
     assert!(text.contains("no-such-file"), "{text:?}");
@@ -224,7 +249,7 @@ fn a_failing_command_returns_its_output_and_status() {
 
     assert_outcome(
         run(&mut tools, "no-such-program-for-jakkals"),
-        ToolStatus::Failed,
+        Cause::Failed(Failure::Spawn),
         "can't start `no-such-program-for-jakkals`",
     );
 }
@@ -239,7 +264,7 @@ fn a_command_past_its_timeout_or_the_deadline_is_killed() {
     let started = Instant::now();
     assert_outcome(
         run(&mut tools, "sleep 20"),
-        ToolStatus::Failed,
+        Cause::Failed(Failure::Timeout),
         "[jakkals: killed after the 1 s timeout]",
     );
     assert!(started.elapsed() < Duration::from_secs(5));
@@ -247,7 +272,7 @@ fn a_command_past_its_timeout_or_the_deadline_is_killed() {
     let started = Instant::now();
     assert_outcome(
         run_by(&mut tools, r#"{"command":"sleep 20"}"#, 200),
-        ToolStatus::Failed,
+        Cause::Failed(Failure::Deadline),
         "[jakkals: killed at the run's deadline]",
     );
     assert!(started.elapsed() < Duration::from_secs(5));
@@ -317,11 +342,7 @@ mod seatbelt {
             "touch new.txt",
             "ls /Users",
         ] {
-            assert_outcome(
-                run(&mut tools, command),
-                ToolStatus::Failed,
-                "Operation not permitted",
-            );
+            assert_exit_failed(run(&mut tools, command), "Operation not permitted");
         }
         assert!(!dir.root.join("new.txt").exists());
     }
@@ -388,11 +409,7 @@ mod landlock {
             "mkdir new",
             "truncate -s 0 box.txt",
         ] {
-            assert_outcome(
-                run(&mut tools, command),
-                ToolStatus::Failed,
-                "Permission denied",
-            );
+            assert_exit_failed(run(&mut tools, command), "Permission denied");
         }
         assert!(!dir.root.join("new.txt").exists());
         assert_eq!(

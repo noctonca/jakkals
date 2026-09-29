@@ -142,7 +142,7 @@ then `answer` if the model answered, and `exit` last. A run with no
 | `mcp_server` | One per MCP server, in the order its tools are offered. `server`, the profile's name for it; `server_name` and `server_version`, as the server reports them; `protocol_version`, the one agreed; `setup_ms`; `tools`, each offered tool exactly as the model sees it: `name`, `description`, `parameters` (a JSON Schema). |
 | `model_request` | `step`; `messages`, the number sent. Written as the request leaves, so a slow call shows as in flight and a run killed mid-call shows which call it died in. |
 | `model_call` | The reply to the `model_request` of the same `step`: `generation_id`; `model` and `provider`, those that served it (a router may pick another model than the one asked for); `input_tokens`, `output_tokens`; `cached_tokens`; `reasoning_tokens` (counted in `output_tokens`, not on top of them); `cost_nano_usd`; `duration_ms`; `finish_reason`. A call that fails has no `model_call`: the `exit` carries the error. |
-| `tool_call` | `step`; `tool`; `arguments`, a string exactly as the model wrote them, usually JSON; `status`: `ok`, `failed` (the tool ran and it failed) or `refused` (it never ran: a tool not offered, a path outside `--cwd`, a command the allowlist doesn't name); `result_bytes`, the result's size before any cut; `cut`; `duration_ms`. |
+| `tool_call` | `step`; `tool`; `arguments`, a string exactly as the model wrote them, usually JSON; `status`: `ok`, `failed` (the tool ran and it failed) or `refused` (it never ran: a tool not offered, a path outside `--cwd`, a command the allowlist doesn't name); `cause`, why a call failed or was refused, typed, below, and `null` when `ok`; `result_bytes`, the result's size before any cut; `cut`; `duration_ms`. |
 | `answer` | `text`, the reply that ended the run, `""` when it had no text. Only when the run ends `done`. |
 | `exit` | `reason`: `done`; `limit`, with `which` naming the limit as the profile does (`steps`, `wall_s`, `cost_usd`, `tokens`, `context_tokens`); or `error`, with a typed `error`, below. And `totals`: `steps`, `tool_calls`, `input_tokens`, `output_tokens`, `cost_nano_usd` (`null` once any reply reported no cost, since a partial sum would understate the run). |
 
@@ -157,6 +157,35 @@ An `error` is one of:
 
 A provider that runs out of time is not an error: the run ends
 `limit` `wall_s`.
+
+A `tool_call`'s `cause` is one of the following. Each is set where the
+failure happens, never read back out of the text the model gets, which
+stays in the [transcript](#the-transcript) only.
+
+| `cause` | `status` | Meaning |
+|---|---|---|
+| `{"kind":"not_offered"}` | `refused` | The model called a tool the profile doesn't offer. |
+| `{"kind":"outside_cwd"}` | `refused` | A path is absolute, holds `..`, or leads outside `--cwd` through a symlink. |
+| `{"kind":"not_allowed"}` | `refused` | A shell command the allowlist doesn't name. |
+| `{"kind":"shell_syntax"}` | `refused` | A shell command holding a pipe, redirect, variable or glob character. |
+| `{"kind":"arguments"}` | `failed` | Arguments that don't fit the tool: not JSON, a missing or unknown field, a value out of range, a pattern that isn't a regex, a command that is empty or has an unclosed quote. |
+| `{"kind":"not_found"}` | `failed` | The path doesn't exist. |
+| `{"kind":"wrong_type"}` | `failed` | `read` of a directory or `list` of a file. |
+| `{"kind":"too_large"}` | `failed` | A file past `read`'s cap. |
+| `{"kind":"not_text"}` | `failed` | A file that isn't UTF-8. |
+| `{"kind":"io"}` | `failed` | Any other error from the file system. |
+| `{"kind":"spawn"}` | `failed` | The shell command's program couldn't be started. |
+| `{"kind":"exit_status","status":1}` | `failed` | The shell command exited with a status other than 0. |
+| `{"kind":"signal","signal":9}` | `failed` | The shell command was killed by a signal Jakkals didn't send. |
+| `{"kind":"lost"}` | `failed` | Jakkals lost track of the shell command and killed it. |
+| `{"kind":"timeout"}` | `failed` | The tool's own time ran out: `tools.shell_timeout_s` or `mcp.<name>.call_timeout_s`. |
+| `{"kind":"deadline"}` | `failed` | The run's deadline passed first. |
+| `{"kind":"is_error"}` | `failed` | The MCP server returned a result marked `isError`. |
+| `{"kind":"mcp_error","code":-32602}` | `failed` | The MCP server answered with an error, its code as sent. |
+| `{"kind":"input_required"}` | `failed` | The MCP server asked for the user's input. |
+| `{"kind":"task"}` | `failed` | The MCP server turned the call into a task to poll. |
+| `{"kind":"unexpected_reply"}` | `failed` | The MCP server answered with something other than a call's result. |
+| `{"kind":"connection"}` | `failed` | The MCP connection failed or closed during the call. |
 
 ### Which build ran
 
@@ -179,7 +208,7 @@ A short run, with the `start` and `model_call` lines trimmed:
 {"type":"start","version":"0.1.0","commit":"…","dirty":false,"profile_hash":"sha256:…","model":"some/model","tools":["read","list"],"sandbox":null,"limits":{…},"transcript":null,"t_ms":0}
 {"type":"model_request","step":1,"messages":2,"t_ms":1}
 {"type":"model_call","step":1,"generation_id":"gen-…","input_tokens":812,"output_tokens":41,"cost_nano_usd":93000,"finish_reason":"tool_calls",…,"t_ms":1650}
-{"type":"tool_call","step":1,"tool":"read","arguments":"{\"path\":\"box.txt\"}","status":"ok","result_bytes":28,"cut":false,"duration_ms":0,"t_ms":1651}
+{"type":"tool_call","step":1,"tool":"read","arguments":"{\"path\":\"box.txt\"}","status":"ok","cause":null,"result_bytes":28,"cut":false,"duration_ms":0,"t_ms":1651}
 {"type":"model_request","step":2,"messages":4,"t_ms":1651}
 {"type":"model_call","step":2,…,"finish_reason":"stop","t_ms":2903}
 {"type":"answer","text":"The box holds three red marbles.","t_ms":2903}
