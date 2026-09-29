@@ -39,7 +39,8 @@ jakkals run --profile p.toml --model m --cwd dir --prompt "…"
    ├─ provider (HTTP) ◀── loop ──▶ tools ── local: read, list, search, shell
    │                        │           └─ MCP servers named in the profile
    │                        ▼
-   └──────────────── events (stdout, JSON lines) ──▶ caller
+   ├──────────────── events (stdout, JSON lines) ──▶ caller
+   └──────────────── transcript (--transcript file, JSON lines), when asked
 ```
 
 The loop sends the conversation to the provider, runs the tool calls in
@@ -137,6 +138,59 @@ A run with no `exit` line did not end cleanly and is void. Costs are
 in billionths of a US dollar (`cost_nano_usd`), integers, `null` where
 not reported.
 
+## The transcript
+
+The events say what happened and what it cost, but not what was said:
+a tool call's result and a reply's text (other than the answer) are
+not in them. A caller that needs to read the run, to judge whether an
+answer rests on what the model saw or to see why a run went wrong,
+asks for a transcript with `--transcript <path>`. It is off by
+default.
+
+It is a command-line option, not a profile field, because it records
+the run without changing it: the model sees the same conversation
+either way, so two runs with the same profile stay comparable, and
+the profile hash doesn't move.
+
+The file is the conversation, one JSON object per line, each with its
+`role`, the `step` it belongs to (0 before the first model call) and
+the run-relative `t_ms`:
+
+| `role` | Carries |
+|---|---|
+| `system` | The system prompt, when there is one. |
+| `user` | The task. |
+| `assistant` | One model reply: its text (or `null`), its tool calls (id, name, arguments as written) and, with `--transcript-reasoning`, its reasoning text (or `null` when the reply carries none). |
+| `tool` | One tool result: the call's id and tool name, and the text exactly as the model got it, cut by `limits.tool_output_bytes` and marked. |
+
+Every reply is written, including the one that ends the run, whether
+it is the answer or a reply whose tool calls a limit kept from
+running. A tool call left unrun has no `tool` line, as it has no
+`tool_call` event. So the lines are what the model was sent and what
+it wrote, in order: a `model_request` event's `messages` count is the
+number of `system`, `user`, `assistant` and `tool` lines before it.
+
+Each line is written and flushed as it happens, like the events, so a
+run killed part-way leaves the transcript up to that point. A line
+that can't be written ends the process as an unwritable event stream
+does: a transcript with a gap would mislead.
+
+A reasoning model's reasoning text is left out unless
+`--transcript-reasoning` is given (it needs `--transcript`). It can
+be long, and it is not part of what the model is sent, so it is
+opt-in. Where the provider returns no reasoning text (some hide it),
+the line says `null` and the `model_call` event's `reasoning_tokens`
+remains its only trace.
+
+A transcript holds everything the model saw: file contents, command
+output, MCP results. So the file is created new, readable and
+writable by its owner only (mode 600), and a path that already
+exists is refused, so no run writes over another's record or into a
+file someone else set up. Where it lives is the caller's choice. A
+caller running several runs should keep their transcripts outside
+every run's `--cwd` and `tools.sandbox_read`, so a model can't read
+another run's.
+
 ## Exit status
 
 `jakkals run` exits with a status per way the run ended, so a caller
@@ -145,7 +199,7 @@ can branch without reading the events; the `exit` event says the rest.
 | Status | Meaning |
 |---|---|
 | 0 | `done`: the model answered. |
-| 2 | The run never started: a bad argument, profile, key variable or `--cwd`, or an MCP server that couldn't be set up. The reason is on stderr, and no events are written. |
+| 2 | The run never started: a bad argument, profile, key variable or `--cwd`, a transcript file that couldn't be created, or an MCP server that couldn't be set up. The reason is on stderr, and no events are written. |
 | 3 | `limit`: the `exit` event names which. |
 | 4 | `error`: the `exit` event carries the typed error. |
 
@@ -432,9 +486,13 @@ timeout, covering connecting, sending and reading the whole reply.
 From a reply Jakkals keeps the text, the tool calls, the usage (with
 cached and reasoning tokens where reported), `usage.cost`, the `id`
 (OpenRouter's generation id), the model and provider that served it,
-and the finish reason. Other fields are dropped; a reasoning model's
-reasoning text among them, so it is not sent back on the next call,
-and its reasoning token count is its only trace. The cost is read
+and the finish reason, and a reasoning model's reasoning text where
+the reply carries it (`reasoning`, or `reasoning_content` as
+llama.cpp and LM Studio name it). Other fields are dropped. The
+reasoning text is never sent back on the next call; it goes only to
+the transcript, when the run records it (see
+[The transcript](#the-transcript)), and otherwise its token count is
+its only trace. The cost is read
 from the number's decimal digits, never through a float, and rounded
 to the nearest nano-dollar. A server that reports cost only when asked
 is asked through `provider.params`.
