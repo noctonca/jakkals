@@ -302,6 +302,7 @@ fn shell_settings(file: FileTools, offered: bool) -> Result<Option<ShellSettings
             ("tools.sandbox", file.sandbox.is_some()),
             ("tools.sandbox_read", file.sandbox_read.is_some()),
             ("tools.shell_timeout_s", file.shell_timeout_s.is_some()),
+            ("tools.shell_env", file.shell_env.is_some()),
         ];
         if let Some((field, _)) = set.iter().find(|(_, set)| *set) {
             return Err(ProfileError::Invalid {
@@ -372,12 +373,37 @@ fn shell_settings(file: FileTools, offered: bool) -> Result<Option<ShellSettings
             problem: "must be positive",
         });
     }
+    let env: Vec<(String, String)> = file.shell_env.unwrap_or_default().into_iter().collect();
+    if env.iter().any(|(name, _)| !is_variable_name(name)) {
+        return Err(ProfileError::Invalid {
+            field: "tools.shell_env",
+            problem: "names a variable other than letters, digits and _, not starting with a digit",
+        });
+    }
+    if env.iter().any(|(_, value)| value.contains('\0')) {
+        return Err(ProfileError::Invalid {
+            field: "tools.shell_env",
+            problem: "has a value holding a NUL, which no environment can carry",
+        });
+    }
     Ok(Some(ShellSettings {
         allow,
         sandbox,
         sandbox_read,
         timeout_s,
+        env,
     }))
+}
+
+/// A name every shell and `env` take: no `=`, no NUL, nothing a program
+/// might read differently.
+fn is_variable_name(name: &str) -> bool {
+    name.bytes()
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic() || first == b'_')
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
 fn mcp_servers(file: BTreeMap<String, FileMcp>) -> Result<Vec<McpSettings>, ProfileError> {
@@ -512,6 +538,8 @@ struct FileTools {
     sandbox: Option<Sandbox>,
     sandbox_read: Option<Vec<String>>,
     shell_timeout_s: Option<u32>,
+    /// A BTreeMap: the variables come ordered by name.
+    shell_env: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Deserialize)]

@@ -349,7 +349,7 @@ holding one of those characters is refused in the profile.
 Each command runs in the working directory with no input, and an
 environment holding only `PATH`, from Jakkals's own: no `HOME`, so no
 user configuration is read. A program that won't start without more,
-as `cargo` needs `HOME` or `CARGO_HOME`, gets it from
+as `cargo` needs to find its home, gets it from
 `tools.shell_env`, which sets each variable to the value the profile
 writes, never to one taken from Jakkals's environment: the profile
 hash then covers what a command sees, and a caller can point `HOME` at
@@ -398,6 +398,23 @@ denial reads `Operation not permitted`. Other processes can't be
 signalled. Some of `/usr/bin`'s programs are stubs that start the real
 one elsewhere: Apple's `git` needs the Command Line Tools'
 folder, `/Library/Developer/CommandLineTools`, in `tools.sandbox_read`.
+Programs using the system's `libcurl`, `cargo` among them, won't start
+without `/private/etc/ssl`, where it reads its OpenSSL configuration.
+A rustup-installed `cargo` runs read-only with its homes named and
+readable, and the repository's `Cargo.lock` committed, since it can't
+write one:
+
+```toml
+[tools]
+local = ["shell"]
+shell_allow = ["cargo tree", "cargo metadata"]
+sandbox_read = ["/private/etc/ssl", "/path/to/.cargo", "/path/to/.rustup"]
+
+[tools.shell_env]
+HOME = "/path/to/an-empty-folder"
+CARGO_HOME = "/path/to/.cargo"
+RUSTUP_HOME = "/path/to/.rustup"
+```
 
 Under `landlock` they are `/bin`, `/sbin`, the `/lib` directories,
 `/usr`, the loader's cache and configuration and `/etc/localtime`, plus

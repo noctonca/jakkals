@@ -95,6 +95,9 @@ pub struct ShellSettings {
     /// Absolute paths the sandbox also lets commands read.
     pub sandbox_read: Vec<PathBuf>,
     pub timeout_s: u32,
+    /// Variables commands get besides `PATH`, ordered by name; a `PATH`
+    /// here replaces Jakkals's own.
+    pub env: Vec<(String, String)>,
 }
 
 /// Why a command's text can't be run as words.
@@ -189,7 +192,8 @@ impl std::error::Error for ShellSetupError {}
 pub struct Shell {
     root: PathBuf,
     settings: ShellSettings,
-    /// `PATH` for commands: Jakkals's own, the only variable passed.
+    /// `PATH` for commands: Jakkals's own, the only variable passed
+    /// from its environment.
     path_env: Option<OsString>,
     confinement: Confinement,
 }
@@ -403,6 +407,7 @@ impl Shell {
         if let Some(path) = &self.path_env {
             command.env("PATH", path);
         }
+        command.envs(self.settings.env.iter().map(|(name, value)| (name, value)));
         command
     }
 }

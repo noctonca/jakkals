@@ -19,6 +19,7 @@ fn settings(allow: &[&str], sandbox: Sandbox) -> ShellSettings {
         sandbox,
         sandbox_read: Vec::new(),
         timeout_s: 30,
+        env: Vec::new(),
     }
 }
 
@@ -96,6 +97,39 @@ fn the_spec_names_the_allowed_commands() {
         spec.description
     );
     assert_eq!(tools.sandbox(), Some(Sandbox::None));
+}
+
+#[test]
+fn a_command_gets_the_profiles_variables_after_path() {
+    let dir = TempDir::new("shell-env");
+    let mut written = settings(&["env"], Sandbox::None);
+    written.env = vec![
+        ("CARGO_HOME".to_owned(), "/opt/cargo".to_owned()),
+        ("HOME".to_owned(), "a home with spaces".to_owned()),
+    ];
+    let mut tools = shell(&dir, &written);
+    let path = std::env::var("PATH").expect("tests run with a PATH");
+    let ToolOutcome::Ok(output) = run(&mut tools, "env") else {
+        panic!("env runs");
+    };
+    let mut lines: Vec<&str> = output.lines().collect();
+    lines.sort_unstable();
+    let path_line = format!("PATH={path}");
+    let mut expected = vec![
+        "CARGO_HOME=/opt/cargo",
+        "HOME=a home with spaces",
+        path_line.as_str(),
+    ];
+    expected.sort_unstable();
+    assert_eq!(lines, expected);
+
+    // A PATH written in the profile replaces Jakkals's own.
+    written.env = vec![("PATH".to_owned(), format!("{path}:/nowhere"))];
+    let mut tools = shell(&dir, &written);
+    assert_eq!(
+        run(&mut tools, "env"),
+        ToolOutcome::Ok(format!("PATH={path}:/nowhere\n"))
+    );
 }
 
 #[test]
