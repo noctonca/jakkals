@@ -99,6 +99,7 @@ is refused too, so a profile never claims what a run won't do.
 | `tools.sandbox` | How shell commands are confined: `seatbelt` (macOS), `landlock` (Linux) or `none`, which must be written out. | the system's own: `seatbelt` on macOS, `landlock` on Linux on x86_64 or aarch64; elsewhere none, and a profile offering `shell` must write `none` |
 | `tools.sandbox_read` | Absolute paths, without `..`, the sandbox also lets commands read, for programs and their libraries installed outside the system's own paths (a package manager's prefix). Refused with `none`, which confines nothing. | none |
 | `tools.shell_timeout_s` | Seconds a shell command may run before it is killed. | 30 |
+| `tools.shell_env` | Environment variables shell commands get, each with the value written here, as a table: `HOME = "/some/dir"`. Names are letters, digits and `_`, not starting with a digit. A `PATH` here replaces Jakkals's own. See [The shell tool](#the-shell-tool). | none: only `PATH` |
 | `mcp.<name>.url` | An MCP server's streamable HTTP endpoint. `<name>` is 1 to 16 of `a-z`, `0-9` and `-`, and prefixes its tools' names. See [MCP servers](#mcp-servers). | required |
 | `mcp.<name>.tools` | The server's tools offered, by the server's names, in the order written; a name twice is refused. | required |
 | `mcp.<name>.key_env` | The environment variable holding the server's key. Unset sends no key; set but empty in the environment stops the run before it starts. | unset |
@@ -347,7 +348,14 @@ holding one of those characters is refused in the profile.
 
 Each command runs in the working directory with no input, and an
 environment holding only `PATH`, from Jakkals's own: no `HOME`, so no
-user configuration is read. It runs in a process group of its own,
+user configuration is read. A program that won't start without more,
+as `cargo` needs to find its home, gets it from
+`tools.shell_env`, which sets each variable to the value the profile
+writes, never to one taken from Jakkals's environment: the profile
+hash then covers what a command sees, and a caller can point `HOME` at
+a throwaway folder rather than a real one. A variable grants no
+access: a path it names is read only if the sandbox allows it, so
+`CARGO_HOME` needs its folder in `tools.sandbox_read` too. It runs in a process group of its own,
 killed whole when `tools.shell_timeout_s` or the run's deadline
 passes, whichever comes first, and again when the command ends, so
 nothing it started outlives it.
@@ -390,6 +398,23 @@ denial reads `Operation not permitted`. Other processes can't be
 signalled. Some of `/usr/bin`'s programs are stubs that start the real
 one elsewhere: Apple's `git` needs the Command Line Tools'
 folder, `/Library/Developer/CommandLineTools`, in `tools.sandbox_read`.
+Programs using the system's `libcurl`, `cargo` among them, won't start
+without `/private/etc/ssl`, where it reads its OpenSSL configuration.
+A rustup-installed `cargo` runs read-only with its homes named and
+readable, and the repository's `Cargo.lock` committed, since it can't
+write one:
+
+```toml
+[tools]
+local = ["shell"]
+shell_allow = ["cargo tree", "cargo metadata"]
+sandbox_read = ["/private/etc/ssl", "/path/to/.cargo", "/path/to/.rustup"]
+
+[tools.shell_env]
+HOME = "/path/to/an-empty-folder"
+CARGO_HOME = "/path/to/.cargo"
+RUSTUP_HOME = "/path/to/.rustup"
+```
 
 Under `landlock` they are `/bin`, `/sbin`, the `/lib` directories,
 `/usr`, the loader's cache and configuration and `/etc/localtime`, plus
