@@ -60,12 +60,16 @@ fn answer(text: &str) -> Value {
 }
 
 fn tool_call(name: &str) -> Value {
+    tool_call_with(name, "{}")
+}
+
+fn tool_call_with(name: &str, arguments: &str) -> Value {
     json!({
         "id": "gen-call",
         "model": "test/model",
         "choices": [{
             "message": {"content": null, "tool_calls": [
-                {"id": "call-0", "type": "function", "function": {"name": name, "arguments": "{}"}}
+                {"id": "call-0", "type": "function", "function": {"name": name, "arguments": arguments}}
             ]},
             "finish_reason": "tool_calls"
         }],
@@ -170,6 +174,7 @@ fn an_answer_ends_the_run_done_with_status_0() {
         "{start}"
     );
     assert_eq!(start["tools"], json!([]));
+    assert_eq!(start["sandbox"], Value::Null);
     assert_eq!(ran.events[3]["text"], "It is empty.");
     let exit = &ran.events[4];
     assert_eq!(exit["reason"], "done");
@@ -220,6 +225,32 @@ fn a_local_tool_runs_in_the_working_directory() {
 }
 
 #[test]
+fn the_shell_runs_an_allowed_command_and_the_start_names_its_sandbox() {
+    let dir = TempDir::new("shell");
+    let address = serve(vec![
+        (200, tool_call_with("shell", r#"{"command":"echo hello"}"#)),
+        (
+            200,
+            tool_call_with("shell", r#"{"command":"rm profile.toml"}"#),
+        ),
+        (200, answer("Done.")),
+    ]);
+    let text = format!(
+        "{}[tools]\nlocal = [\"shell\"]\nshell_allow = [\"echo\"]\nsandbox = \"none\"\n",
+        profile(address, 5)
+    );
+    let ran = run(&dir, &text, &KEY);
+
+    assert_eq!(ran.status, 0, "stderr: {}", ran.stderr);
+    assert_eq!(ran.events[0]["tools"], json!(["shell"]));
+    assert_eq!(ran.events[0]["sandbox"], "none");
+    assert_eq!(ran.events[3]["status"], "ok");
+    assert_eq!(ran.events[3]["result_bytes"], "hello\n".len());
+    assert_eq!(ran.events[6]["status"], "refused");
+    assert!(dir.0.join("profile.toml").exists());
+}
+
+#[test]
 fn a_limit_ends_the_run_with_status_3() {
     let dir = TempDir::new("limit");
     let address = serve(vec![(200, tool_call("read"))]);
@@ -260,9 +291,12 @@ fn setup_faults_exit_2_with_no_events() {
         ),
         ("[limits]\nsteps = 5\n".to_owned(), KEY.to_vec(), "wall_s"),
         (
-            format!("{}[tools]\nlocal = [\"shell\"]\n", profile(address, 5)),
+            format!(
+                "{}[mcp.memory]\nurl = \"http://127.0.0.1:9/mcp\"\n",
+                profile(address, 5)
+            ),
             KEY.to_vec(),
-            "shell",
+            "mcp",
         ),
     ];
     for (text, env, named) in cases {

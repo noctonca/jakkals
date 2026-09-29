@@ -29,8 +29,9 @@ allowlisted shell) plus whatever MCP servers the profile names.
 ## Status
 
 Early. `jakkals run` works end to end against OpenRouter or a local
-server, with the local tools `read`, `list` and `search` when the
-profile offers them. The shell tool and MCP come next. The design is
+server, with the local tools `read`, `list`, `search` and an
+allowlisted `shell` (sandboxed on macOS) when the profile offers them.
+MCP comes next. The design is
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Running it

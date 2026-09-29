@@ -768,10 +768,12 @@ dependencies = [
  "grep-regex",
  "grep-searcher",
  "ignore",
+ "libc",
  "reqwest",
  "serde",
  "serde_json",
  "sha2",
+ "shlex",
  "tokio",
  "toml",
 ]

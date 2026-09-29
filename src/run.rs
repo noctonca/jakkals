@@ -74,6 +74,7 @@ where
         profile_hash: task.profile_hash.to_owned(),
         model: task.model.to_owned(),
         tools: tools.specs().iter().map(|spec| spec.name.clone()).collect(),
+        sandbox: tools.sandbox(),
         limits: *limits,
     });
 

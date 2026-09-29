@@ -5,6 +5,7 @@
 use std::cell::Cell;
 use std::collections::VecDeque;
 use std::future::Future;
+use std::path::PathBuf;
 use std::pin::pin;
 use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
@@ -13,6 +14,7 @@ use crate::clock::Clock;
 use crate::conversation::{Message, ToolCall, ToolSpec};
 use crate::events::{Record, Sink};
 use crate::provider::{Provider, ProviderError, Reply, Request, Usage};
+use crate::tools::shell::Sandbox;
 use crate::tools::{ToolOutcome, Tools};
 
 /// Drives a future whose edges are all scripted, so it never waits.
@@ -122,6 +124,10 @@ impl Tools for ScriptedTools {
         &self.specs
     }
 
+    fn sandbox(&self) -> Option<Sandbox> {
+        None
+    }
+
     async fn call(&mut self, call: &ToolCall, _deadline_ms: u64) -> ToolOutcome {
         self.seen.push(call.clone());
         let (outcome, takes_ms) = self
@@ -185,5 +191,36 @@ pub fn calls(names: &[&str], usage: Reply) -> Reply {
         tool_calls,
         finish_reason: Some("tool_calls".to_owned()),
         ..usage
+    }
+}
+
+/// A directory of its own under the system's temporary directory, with
+/// `root` inside it as a working directory, so a test can put a file
+/// just outside. Removed when dropped.
+pub struct TempDir {
+    pub base: PathBuf,
+    pub root: PathBuf,
+}
+
+impl TempDir {
+    pub fn new(name: &str) -> Self {
+        let base = std::env::temp_dir().join(format!("jakkals-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("root");
+        std::fs::create_dir_all(&root).expect("temp dir is creatable");
+        Self { base, root }
+    }
+
+    /// Writes a file at `path` under the root, making its directories.
+    pub fn write(&self, path: &str, bytes: impl AsRef<[u8]>) {
+        let path = self.root.join(path);
+        std::fs::create_dir_all(path.parent().expect("a parent")).expect("dirs are creatable");
+        std::fs::write(path, bytes).expect("file is writable");
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.base);
     }
 }

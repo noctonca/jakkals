@@ -110,7 +110,7 @@ fn the_event_stream_has_the_documented_shape() {
     let version = env!("CARGO_PKG_VERSION");
     let expected = [
         format!(
-            r#"{{"type":"start","version":"{version}","profile_hash":"hash","model":"test/model","tools":["read"],"limits":{{"steps":10,"wall_s":60,"cost_nano_usd":null,"tokens":null,"context_tokens":null,"tool_output_bytes":1000}},"t_ms":0}}"#
+            r#"{{"type":"start","version":"{version}","profile_hash":"hash","model":"test/model","tools":["read"],"sandbox":null,"limits":{{"steps":10,"wall_s":60,"cost_nano_usd":null,"tokens":null,"context_tokens":null,"tool_output_bytes":1000}},"t_ms":0}}"#
         ),
         r#"{"type":"model_request","step":1,"messages":2,"t_ms":0}"#.to_owned(),
         r#"{"type":"model_call","step":1,"generation_id":"gen-1","model":"test/model-served","provider":"TestCloud","input_tokens":100,"output_tokens":10,"cached_tokens":null,"reasoning_tokens":null,"cost_nano_usd":1500,"duration_ms":250,"finish_reason":"tool_calls","t_ms":250}"#.to_owned(),

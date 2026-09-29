@@ -8,6 +8,7 @@ use serde::Serialize;
 use crate::provider::ProviderError;
 use crate::run::Limits;
 use crate::tools::ToolStatus;
+use crate::tools::shell::Sandbox;
 
 /// An event with the run-relative time it happened at.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -25,6 +26,8 @@ pub enum Event {
         profile_hash: String,
         model: String,
         tools: Vec<String>,
+        /// The shell's sandbox; `None` when no shell is offered.
+        sandbox: Option<Sandbox>,
         limits: Limits,
     },
     /// Written as a request leaves, so a slow call shows as in flight.

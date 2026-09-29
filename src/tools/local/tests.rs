@@ -4,7 +4,7 @@
 use std::os::unix::fs::symlink;
 
 use super::*;
-use crate::scripted::block_on;
+use crate::scripted::{TempDir, block_on};
 use crate::tools::ToolStatus;
 
 const ALL: [LocalTool; 3] = [LocalTool::Read, LocalTool::List, LocalTool::Search];
@@ -12,39 +12,8 @@ const ALL: [LocalTool; 3] = [LocalTool::Read, LocalTool::List, LocalTool::Search
 /// Time enough for any call here; the deadline has its own tests.
 const DEADLINE_MS: u64 = 60_000;
 
-/// A directory of its own under the system's temporary directory, with
-/// `root` inside it as the working directory, so a test can put a file
-/// just outside.
-struct TempDir {
-    base: PathBuf,
-    root: PathBuf,
-}
-
-impl TempDir {
-    fn new(name: &str) -> Self {
-        let base =
-            std::env::temp_dir().join(format!("jakkals-local-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        let root = base.join("root");
-        std::fs::create_dir_all(&root).expect("temp dir is creatable");
-        Self { base, root }
-    }
-
-    fn write(&self, path: &str, bytes: impl AsRef<[u8]>) {
-        let path = self.root.join(path);
-        std::fs::create_dir_all(path.parent().expect("a parent")).expect("dirs are creatable");
-        std::fs::write(path, bytes).expect("file is writable");
-    }
-
-    fn tools(&self) -> LocalTools {
-        LocalTools::new(&self.root, &ALL).expect("the root resolves")
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.base);
-    }
+fn tools(dir: &TempDir) -> LocalTools {
+    LocalTools::new(&dir.root, &ALL, None, None).expect("the root resolves")
 }
 
 fn call_by(tools: &mut LocalTools, name: &str, arguments: &str, deadline_ms: u64) -> ToolOutcome {
@@ -80,25 +49,28 @@ fn specs_are_the_tools_offered_in_order() {
     let names = |tools: &LocalTools| -> Vec<String> {
         tools.specs().iter().map(|spec| spec.name.clone()).collect()
     };
-    assert_eq!(names(&dir.tools()), ["read", "list", "search"]);
-    let some = LocalTools::new(&dir.root, &[LocalTool::Read, LocalTool::Search])
+    assert_eq!(names(&tools(&dir)), ["read", "list", "search"]);
+    let some = LocalTools::new(&dir.root, &[LocalTool::Read, LocalTool::Search], None, None)
         .expect("the root resolves");
     assert_eq!(names(&some), ["read", "search"]);
-    let none = LocalTools::new(&dir.root, &[]).expect("the root resolves");
+    let none = LocalTools::new(&dir.root, &[], None, None).expect("the root resolves");
     assert!(none.specs().is_empty());
 }
 
 #[test]
 fn a_missing_working_directory_is_an_error() {
     let dir = TempDir::new("missing-root");
-    assert!(LocalTools::new(&dir.root.join("nothing"), &ALL).is_err());
+    assert!(matches!(
+        LocalTools::new(&dir.root.join("nothing"), &ALL, None, None),
+        Err(ToolsSetupError::WorkingDirectory(_))
+    ));
 }
 
 #[test]
 fn read_returns_the_file_or_its_lines() {
     let dir = TempDir::new("read");
     dir.write("src/box.txt", "one\ntwo\nthree\nfour\n");
-    let mut tools = dir.tools();
+    let mut tools = tools(&dir);
 
     assert_eq!(
         ok(call(&mut tools, "read", json!({"path": "src/box.txt"}))),
@@ -149,7 +121,7 @@ fn read_fails_on_what_it_cant_read() {
         vec![b'a'; usize::try_from(READ_CAP_BYTES).expect("fits usize") + 1],
     );
     std::fs::create_dir(dir.root.join("empty")).expect("dir is creatable");
-    let mut tools = dir.tools();
+    let mut tools = tools(&dir);
 
     let cases = [
         (json!({"path": "nothing.txt"}), "doesn't exist"),
@@ -190,7 +162,7 @@ fn paths_outside_the_working_directory_are_refused() {
     symlink(dir.base.join("secret.txt"), dir.root.join("leak.txt")).expect("symlink");
     symlink(&dir.base, dir.root.join("up")).expect("symlink");
     symlink(dir.root.join("inside.txt"), dir.root.join("alias.txt")).expect("symlink");
-    let mut tools = dir.tools();
+    let mut tools = tools(&dir);
 
     let absolute = dir.root.join("inside.txt").display().to_string();
     let cases = [
@@ -227,7 +199,7 @@ fn list_walks_sorted_skipping_hidden_and_ignored() {
     dir.write("target/debug/out", "");
     dir.write("run.log", "");
     symlink(dir.base.clone(), dir.root.join("link")).expect("symlink");
-    let mut tools = dir.tools();
+    let mut tools = tools(&dir);
 
     assert_eq!(
         ok(call(&mut tools, "list", json!({}))),
@@ -270,7 +242,7 @@ fn list_stops_at_its_cap() {
     for index in 0..=LIST_CAP_ENTRIES {
         dir.write(&format!("f{index:04}"), "");
     }
-    let mut tools = dir.tools();
+    let mut tools = tools(&dir);
 
     let text = ok(call(&mut tools, "list", json!({})));
     let lines: Vec<&str> = text.lines().collect();
@@ -291,7 +263,7 @@ fn search_returns_each_matching_line() {
     dir.write(".gitignore", "ignored.txt\n");
     dir.write("ignored.txt", "cat\n");
     dir.write(".hidden", "cat\n");
-    let mut tools = dir.tools();
+    let mut tools = tools(&dir);
 
     assert_eq!(
         ok(call(&mut tools, "search", json!({"pattern": "cat"}))),
@@ -332,7 +304,7 @@ fn search_stops_at_its_caps() {
         "huge-line.txt",
         format!("hit {}\n", "x".repeat(SEARCH_LINE_CAP_BYTES * 2)),
     );
-    let mut tools = dir.tools();
+    let mut tools = tools(&dir);
 
     let text = ok(call(
         &mut tools,
@@ -371,7 +343,7 @@ fn search_stops_at_its_caps() {
 fn a_passed_deadline_stops_a_walk() {
     let dir = TempDir::new("deadline");
     dir.write("a.txt", "cat\n");
-    let mut tools = dir.tools();
+    let mut tools = tools(&dir);
 
     assert_outcome(
         call_by(&mut tools, "list", "{}", 0),
@@ -394,7 +366,7 @@ fn the_loop_hands_a_read_back_to_the_model() {
 
     let dir = TempDir::new("loop");
     dir.write("box.txt", "a cat\n");
-    let mut tools = dir.tools();
+    let mut tools = tools(&dir);
     let clock = VirtualClock::default();
     let mut read = reply(100, 10, None);
     read.tool_calls = vec![ToolCall {

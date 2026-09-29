@@ -2,8 +2,8 @@
 
 Status: **draft**. The fixed decisions below are settled, and so are
 the profile fields Jakkals reads today and the local tools. The fields
-of capabilities not built yet (the shell, MCP) and the event shapes are
-a first proposal, to be settled by the code that reads or writes them.
+of capabilities not built yet (MCP) and the event shapes are a first
+proposal, to be settled by the code that reads or writes them.
 
 ## What Jakkals is
 
@@ -79,11 +79,10 @@ must be positive. Every other field has a documented default.
 
 A field the profile doesn't know is refused, not ignored, so a
 misspelt limit is an error rather than a run without it; only
-`provider.params` is open. A field for a capability not built yet
-(`shell` in `tools.local`, `tools.shell_allow`, `tools.sandbox`, the
-`mcp` table) is refused, so a profile never claims what a run won't
-do; those rows below are the design, settled by the change that builds
-each.
+`provider.params` is open. A field for a capability not built yet (the
+`mcp` table) is refused, and so is a shell setting when `shell` isn't
+offered, so a profile never claims what a run won't do; the `mcp` row
+below is the design, settled by the change that builds it.
 
 | Field | What it sets | Default |
 |---|---|---|
@@ -97,9 +96,11 @@ each.
 | `provider.base_url` | The API root of any OpenAI-compatible server. See [The provider](#the-provider). | `https://openrouter.ai/api/v1` |
 | `provider.api_key_env` | The environment variable holding the key, sent as a bearer token. Unset sends no key (a local server); set but empty in the environment ends the run before it starts. | unset |
 | `provider.params` | Temperature, max tokens and the like, passed through as given. May not set `model`, `messages`, `tools` or `stream`. | none |
-| `tools.local` | The local tools offered, by name: `read`, `list`, `search`. Offered in that order whatever the order written; a name twice is refused. `shell` is not built yet. See [The local tools](#the-local-tools). | none |
-| `tools.shell_allow` | Not built. The shell's allowlist, as leading whole words (`git log`). See [The shell tool](#the-shell-tool). | |
-| `tools.sandbox` | Not built. How shell commands are confined: `seatbelt` (macOS) by default; `none` must be written out. | |
+| `tools.local` | The local tools offered, by name: `read`, `list`, `search`, `shell`. Offered in that order whatever the order written; a name twice is refused. See [The local tools](#the-local-tools) and [The shell tool](#the-shell-tool). | none |
+| `tools.shell_allow` | The commands `shell` may run, each as its leading words (`git log`). Required when `shell` is offered. | none |
+| `tools.sandbox` | How shell commands are confined: `seatbelt` (macOS) or `none`, which must be written out. | `seatbelt` |
+| `tools.sandbox_read` | Absolute paths the sandbox also lets commands read, for programs and their libraries installed outside the system's own paths (a package manager's prefix). | none |
+| `tools.shell_timeout_s` | Seconds a shell command may run before it is killed. | 30 |
 | `mcp.<name>` | Not built. An MCP server: `url`, and the environment variable holding its key; optional tool allow or deny list. | |
 
 A minimal profile for OpenRouter:
@@ -123,7 +124,7 @@ after it.
 
 | `type` | Carries |
 |---|---|
-| `start` | Jakkals version, profile hash, model, tool names, and the limits in force. |
+| `start` | Jakkals version, profile hash, model, tool names, the shell's `sandbox` (`seatbelt`, `none`, or `null` when `shell` isn't offered), and the limits in force. |
 | `model_request` | Step, number of messages sent. Written as the request leaves, so a slow call shows as in flight and a run killed mid-call shows which call it died in. |
 | `model_call` | The reply to a `model_request`: step, generation id, model and provider that served it, input/output/cached tokens, reasoning tokens (part of the output tokens, where reported), cost, duration, finish reason. |
 | `tool_call` | Step, tool, arguments as the model wrote them, `status` (`ok`, `failed`, `refused`), the result's size before any cut, whether it was cut, duration. |
@@ -227,32 +228,61 @@ fails, and the run then ends on `wall_s`.
 
 ## The shell tool
 
-There is no shell interpreter. A command is split into words (with
-shell quoting rules) and run directly, so an allowlist entry means
-what it says. A command holding a pipe, redirect, `;`, `&&`, `||`,
-`$(`, a backtick or a glob is refused, and the refusal goes back to the
-model with a `tool_call` event marked refused. The allowlist matches
-whole leading words: `git log` allows `git log --oneline`, not
-`git logfoo`. Each command runs in the working directory, with a
-minimal environment, a timeout and the output cap.
+[`src/tools/shell.rs`](../src/tools/shell.rs). `shell` takes one
+argument, `command`. There is no shell interpreter: the command is
+split into words with shell quoting rules and run directly, so an
+allowlist entry means what it says.
+
+A command is refused, before anything runs, when it holds any of
+`|` `&` `;` `<` `>` `` ` `` `$` `*` `?` `[` or a line break, quoted or
+not: no shell reads them, and a model writing one expects a shell that
+isn't there. It is refused too when its words don't begin with one of
+`tools.shell_allow`'s entries, matched as whole words: `git log` allows
+`git log --oneline`, not `git logfoo` nor `git -C / log`. An entry
+holding one of those characters is refused in the profile.
+
+Each command runs in the working directory with no input, and an
+environment holding only `PATH`, from Jakkals's own: no `HOME`, so no
+user configuration is read. It runs in a process group of its own,
+killed whole when `tools.shell_timeout_s` or the run's deadline
+passes, whichever comes first, and again when the command ends, so
+nothing it started outlives it.
+
+The result is the command's standard output, then its standard error
+after a `[jakkals: stderr]` line if there is any, then
+`[jakkals: exit status N]` unless the status is 0. A status other than
+0, a kill or a timeout is a `failed` tool call, and the output still
+goes back to the model. Each stream is kept up to 1 MiB, a fixed bound
+so a runaway command can't fill memory; what is past it is counted and
+dropped, and a line says so. `limits.tool_output_bytes` then cuts the
+whole as for any tool.
 
 Word checks can't keep a command inside the working directory:
-`cat /etc/hosts` and `git -C / log` begin with allowed words. That is
-the sandbox's job. `tools.sandbox` confines each command at the OS
-level: no writes anywhere, no reads outside the working directory and
-the system paths a program needs to start.
+`cat /etc/hosts` begins with an allowed word. That is the sandbox's
+job. `tools.sandbox` confines each command at the OS level.
 
 | Sandbox | Status |
 |---|---|
-| `seatbelt` | macOS, through `sandbox-exec` and a profile kept in this repository. The default. |
+| `seatbelt` | macOS, through `sandbox-exec` and [`src/tools/shell/seatbelt.sb`](../src/tools/shell/seatbelt.sb). The default. |
 | `none` | Word checks only. Must be written out in the profile. |
 | `landlock` | Linux. Later, when a run needs Linux. |
 | `container` | Later: commands run in a throwaway container, where writes, even destructive ones, can be allowed and watched. |
 
+Under `seatbelt` a command may read the working directory, the paths
+in `tools.sandbox_read`, and what a program needs to start: the
+system's own directories (`/bin`, `/sbin`, `/usr` but for
+`/usr/local`, `/System`, the loader's cache, the time zones). It may
+read any file's metadata (size and times, not content), since programs
+resolve paths through their parents. It may write nothing but
+`/dev/null` and has no network. A denied read or write is the
+program's own error (`Operation not permitted`), in its output. A
+program installed elsewhere, such as Homebrew's under `/opt/homebrew`,
+can't even start until its prefix is in `tools.sandbox_read`. On
+anything but macOS, `seatbelt` stops the run before it starts.
+
 The sandbox is on by default, an exception to capabilities being off
-by default, because it takes power away rather than adding it. Until
-`seatbelt` lands, the word checks are the only guard, and a run's
-`start` event says so.
+by default, because it takes power away rather than adding it. A run's
+`start` event names the sandbox in force.
 
 ## Cost
 
@@ -317,4 +347,5 @@ Every dependency has a row here before it enters `Cargo.toml`.
 | `ignore` | The `list` and `search` tools' walk, with ripgrep's ignore rules. | yes |
 | `grep-searcher`, `grep-regex` | The `search` tool: ripgrep's line searcher (binary detection, bounded line buffer) and its regex matcher. | yes |
 | `sha2` | The profile hash. | yes |
-| `shlex` | Splitting a shell command into words with the shell's quoting rules, without a shell. | not yet |
+| `shlex` | Splitting a shell command into words with the shell's quoting rules, without a shell. | yes |
+| `libc` | Killing a timed-out command's whole process group (`killpg`), which `std` can't. | yes |
