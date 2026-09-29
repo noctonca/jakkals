@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+
+# Commit-msg hook, optional and local only: refuses a message matching a
+# maintainer's private patterns. The pre-commit hook runs before the
+# message exists, so this reads it. Point to the patterns once per clone
+# (the setting lives in .git/config, never in the repo):
+#   git config hooks.privateNames <path-to-patterns-file>
+# The file holds one extended regular expression per line, matched
+# case-insensitively; blank lines and # comments are ignored. It never
+# prints a pattern or the text that matched.
+
+set -uo pipefail
+names=$(git config --get hooks.privateNames || true)
+[ -n "$names" ] && [ -r "$names" ] || exit 0
+pattern=$(grep -Ev '^[[:space:]]*(#|$)' "$names" | paste -sd'|' -)
+[ -n "$pattern" ] || exit 0
+# git's own comment lines, starting with #, are not part of the message.
+if grep -Ev '^#' "$1" | grep -Eqi -- "$pattern"; then
+    echo "commit-msg: the message matches a private pattern; reword it (nothing was committed)" >&2
+    exit 1
+fi
+exit 0

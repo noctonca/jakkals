@@ -1,0 +1,18 @@
+[package]
+name = "jakkals"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+description = "Jakkals (YAH-kuls), Afrikaans for 'jackal': a small coding agent whose every model call, tool call and limit is written down"
+repository = "https://github.com/noctonca/jakkals"
+readme = "README.md"
+keywords = ["agent", "llm", "mcp", "cli", "openrouter"]
+categories = ["command-line-utilities", "development-tools"]
+# Ship only code, README and licences (the docs live in the repo).
+include = ["src/**", "README.md", "LICENSE-*"]
+
+# Every dependency added here must first earn its row in
+# docs/ARCHITECTURE.md "The dependency register".
+[dependencies]
+clap = { version = "4.6", features = ["derive"] }

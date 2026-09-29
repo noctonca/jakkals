@@ -1,0 +1,1 @@
+See [AGENTS.md](AGENTS.md) for project context, principles, and the "never" list, [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design, and [TIGERSTYLE.md](TIGERSTYLE.md) for the coding discipline.

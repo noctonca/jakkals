@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+
+# Pre-commit hook, three checks on what is staged (the index, not the
+# working tree, so unrelated unstaged edits don't get blamed):
+#
+# 1. rustfmt: each staged .rs blob against CI's policy (cargo fmt --check).
+# 2. Setup leaks: private and tailnet IPv4 addresses, *.ts.net names and
+#    home-directory paths. This repo is public; endpoints come from the
+#    environment or a profile at run time. It prints file:count, never
+#    the matching text.
+# 3. Optional, local only: a maintainer's own privacy check, a script
+#    that reads its patterns from outside the repo. Point to it once per
+#    clone (the setting lives in .git/config, never in the repo):
+#      git config hooks.privacyCheck <path-to-script>
+#    The script is run as: <script> --staged --repo <this repo>
+#
+# Enable once per clone:
+#   git config core.hooksPath scripts/git-hooks
+#
+# Bypass for a single commit: git commit --no-verify
+# Skip only the format check:  SKIP_FORMAT=1 git commit ...
+
+set -euo pipefail
+status=0
+
+# 1. rustfmt
+if [ "${SKIP_FORMAT:-0}" != "1" ]; then
+    if ! command -v rustfmt >/dev/null 2>&1; then
+        echo "pre-commit: rustfmt not found; skipping format check." >&2
+    else
+        bad=()
+        while IFS= read -r -d '' file; do
+            # The edition matches Cargo.toml's.
+            if ! git show ":$file" | rustfmt --check --edition 2024 >/dev/null 2>&1; then
+                bad+=("$file")
+            fi
+        done < <(git diff --cached --name-only --diff-filter=ACMR -z -- '*.rs')
+        if [ "${#bad[@]}" -gt 0 ]; then
+            echo "pre-commit: rustfmt issues in staged content:" >&2
+            printf '  %s\n' "${bad[@]}" >&2
+            echo "Fix with: cargo fmt --all && git add -u" >&2
+            status=1
+        fi
+    fi
+fi
+
+# 2. Setup leaks. RFC 1918 ranges, the 100.64.0.0/10 range tailnets use,
+# tailnet DNS names, and absolute home paths.
+leak='(^|[^0-9.])(10\.[0-9]{1,3}|192\.168|172\.(1[6-9]|2[0-9]|3[01])|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7]))\.[0-9]{1,3}(\.[0-9]{1,3})?([^0-9.]|$)|\.ts\.net([^A-Za-z0-9-]|$)|/Users/[A-Za-z]|/home/[A-Za-z]'
+if hits=$(git grep --cached -cE "$leak" -- . ':(exclude)scripts/git-hooks/*' 2>/dev/null); then
+    echo "pre-commit: staged files hold an address or home path from someone's setup:" >&2
+    printf '  %s\n' $hits >&2
+    echo "Use a placeholder (example.com, 127.0.0.1, a relative path)." >&2
+    status=1
+fi
+
+# 3. The maintainer's own privacy check, if configured.
+check=$(git config --get hooks.privacyCheck || true)
+if [ -n "$check" ]; then
+    if [ -x "$check" ]; then
+        "$check" --staged --repo "$(git rev-parse --show-toplevel)" || status=1
+    else
+        echo "pre-commit: hooks.privacyCheck is set but not executable; skipped." >&2
+    fi
+fi
+
+exit "$status"
