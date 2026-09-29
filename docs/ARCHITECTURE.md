@@ -1,8 +1,9 @@
 # Architecture
 
-Status: **draft**. The fixed decisions below are settled; the profile
-fields and event shapes are a first proposal, to be settled before the
-code that reads or writes them.
+Status: **draft**. The fixed decisions below are settled, and so are
+the profile fields Jakkals reads today. The fields of capabilities not
+built yet (tools, MCP) and the event shapes are a first proposal, to be
+settled by the code that reads or writes them.
 
 ## What Jakkals is
 
@@ -63,29 +64,54 @@ The loop's rules, each pinned by a scripted test in `src/run/tests.rs`:
   the loop refuses it, and the refusal goes back to the model.
 - Tool calls in one reply run in the order the model wrote them.
 
-## The profile (proposed)
+## The profile
 
-One TOML file, and the run's first event carries the profile's hash.
+One TOML file, read by [`src/profile.rs`](../src/profile.rs). The run's
+first event carries its hash: `sha256:` and the hex digest of the
+file's bytes, so `shasum -a 256` matches a run to its file. What the
+defaults mean is fixed by the Jakkals version, which the same event
+carries.
+
 `limits.steps` and `limits.wall_s` are required, so every run is
 bounded by numbers written in its own profile. The other limits are
-off when unset: an unset limit is not checked. Every other field has
-a documented default.
+off when unset: an unset limit is not checked. A limit that is set
+must be positive. Every other field has a documented default.
 
-| Field | What it sets |
-|---|---|
-| `system_prompt` | The system message, verbatim. Empty means no system message is sent. |
-| `tools.local` | Which local tools exist: `read`, `list`, `search`, `shell`. |
-| `tools.shell_allow` | The shell's allowlist, as leading whole words (`git log`). See [The shell tool](#the-shell-tool). |
-| `tools.sandbox` | How shell commands are confined: `seatbelt` (macOS) by default; `none` must be written out. |
-| `mcp.<name>` | An MCP server: `url`, and the environment variable holding its key; optional tool allow or deny list. |
-| `limits.steps` | Most model calls in a run. Required. |
-| `limits.cost_usd` | Stop once the reported cost passes this. Unset by default. See [Cost](#cost). |
-| `limits.tokens` | Stop once total tokens pass this. Unset by default. |
-| `limits.context_tokens` | Stop once a model call's prompt passes this many tokens. Unset by default. See [Context size](#context-size). |
-| `limits.wall_s` | The run's deadline. Required. |
-| `limits.tool_output_bytes` | A tool result longer than this is cut, and the cut is marked. A size cap, not a run bound, so it has a documented default. |
-| `provider.base_url` | OpenRouter by default; any compatible server. The key comes from an environment variable the profile names. |
-| `provider.params` | Temperature, max tokens and the like, passed through as given. |
+A field the profile doesn't know is refused, not ignored, so a
+misspelt limit is an error rather than a run without it; only
+`provider.params` is open. The `tools` and `mcp` tables are refused
+until the capability they configure is built, so a profile never
+claims what a run won't do; their rows below are the design, settled
+by the change that builds each.
+
+| Field | What it sets | Default |
+|---|---|---|
+| `system_prompt` | The system message, verbatim. Empty means no system message is sent. | empty |
+| `limits.steps` | Most model calls in a run. | required |
+| `limits.wall_s` | The run's deadline, in seconds. | required |
+| `limits.cost_usd` | Stop once the reported cost passes this many US dollars. Read from the digits written, never through a float. See [Cost](#cost). | unset |
+| `limits.tokens` | Stop once total tokens pass this. | unset |
+| `limits.context_tokens` | Stop once a model call's prompt passes this many tokens. See [Context size](#context-size). | unset |
+| `limits.tool_output_bytes` | A tool result longer than this is cut, and the cut is marked. A size cap, not a run bound, so it has a default: about 8,000 tokens of text. | 32768 |
+| `provider.base_url` | The API root of any OpenAI-compatible server. See [The provider](#the-provider). | `https://openrouter.ai/api/v1` |
+| `provider.api_key_env` | The environment variable holding the key, sent as a bearer token. Unset sends no key (a local server); set but empty in the environment ends the run before it starts. | unset |
+| `provider.params` | Temperature, max tokens and the like, passed through as given. May not set `model`, `messages`, `tools` or `stream`. | none |
+| `tools.local` | Not built. Which local tools exist: `read`, `list`, `search`, `shell`. | |
+| `tools.shell_allow` | Not built. The shell's allowlist, as leading whole words (`git log`). See [The shell tool](#the-shell-tool). | |
+| `tools.sandbox` | Not built. How shell commands are confined: `seatbelt` (macOS) by default; `none` must be written out. | |
+| `mcp.<name>` | Not built. An MCP server: `url`, and the environment variable holding its key; optional tool allow or deny list. | |
+
+A minimal profile for OpenRouter:
+
+```toml
+[limits]
+steps = 30
+wall_s = 600
+cost_usd = 0.50
+
+[provider]
+api_key_env = "OPENROUTER_API_KEY"
+```
 
 ## Events (proposed)
 
@@ -230,8 +256,8 @@ Every dependency has a row here before it enters `Cargo.toml`.
 | `tokio` | `rmcp` and `reqwest` are async; one runtime for both. | yes |
 | `reqwest` (rustls) | HTTP to the provider. | yes |
 | `serde`, `serde_json` (`raw_value`) | Wire types, events; `raw_value` keeps a reported cost as the digits the server wrote. | yes |
-| `toml` | The profile. | not yet |
+| `toml` | The profile. | yes |
 | `rmcp` | MCP client. | not yet |
 | `ignore`, `grep-searcher` | The `list` and `search` tools, with ripgrep's ignore rules. | not yet |
-| `sha2` | The profile hash. | not yet |
+| `sha2` | The profile hash. | yes |
 | `shlex` | Splitting a shell command into words with the shell's quoting rules, without a shell. | not yet |

@@ -564,33 +564,3 @@ fn config_refuses_reserved_params_and_bad_urls() {
     let temperature = Map::from_iter([("temperature".to_owned(), json!(0.2))]);
     assert!(config(OPENROUTER_BASE_URL, temperature).is_ok());
 }
-
-#[test]
-fn cost_is_read_from_its_digits() {
-    let cases = [
-        ("0", Some(0)),
-        ("0.0", Some(0)),
-        ("1", Some(1_000_000_000)),
-        ("0.000123456", Some(123_456)),
-        ("12.3456789012", Some(12_345_678_901)),
-        ("1.5e-6", Some(1_500)),
-        ("1.5E-6", Some(1_500)),
-        ("2e+3", Some(2_000_000_000_000)),
-        // Halves round up, less rounds down.
-        ("0.0000000005", Some(1)),
-        ("0.00000000049", Some(0)),
-        ("1e-400", Some(0)),
-        // The most u64 nano-dollars hold, and one past it.
-        ("18446744073.709551615", Some(u64::MAX)),
-        ("18446744073.709551616", None),
-        ("1e30", None),
-        ("-0.1", None),
-        (".5", None),
-        ("\"0.1\"", None),
-        ("null", None),
-        ("1234567890123456789012345678901", None),
-    ];
-    for (literal, expected) in cases {
-        assert_eq!(nano_usd(literal), expected, "{literal}");
-    }
-}

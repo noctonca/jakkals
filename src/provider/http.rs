@@ -9,6 +9,7 @@ use serde_json::value::RawValue;
 use serde_json::{Map, Value};
 
 use crate::conversation::{Message, ToolCall, ToolSpec};
+use crate::money;
 use crate::provider::{Provider, ProviderError, Reply, Request, Usage};
 
 /// The profile's default for `provider.base_url`.
@@ -17,7 +18,7 @@ pub const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 /// Request body fields Jakkals sets itself, which `provider.params` may
 /// not override: the conversation is the loop's, and `stream` would
 /// change the reply's format.
-const RESERVED_PARAMS: [&str; 4] = ["model", "messages", "tools", "stream"];
+pub(crate) const RESERVED_PARAMS: [&str; 4] = ["model", "messages", "tools", "stream"];
 
 /// The most reply body read. A guard against a runaway server, far
 /// above any real reply: a completion's body is its text plus a little
@@ -28,10 +29,6 @@ const REPLY_CAP_BYTES: usize = 16 * 1024 * 1024;
 /// are a short JSON object; this keeps a server's HTML error page from
 /// swamping the event line.
 const ERROR_BODY_CAP_BYTES: usize = 16 * 1024;
-
-/// A cost has a handful of significant digits; more than fit a u128
-/// with room to spare is not a cost.
-const COST_DIGITS_MAX: usize = 30;
 
 pub struct HttpConfig {
     /// The API root; requests go to `{base_url}/chat/completions`.
@@ -63,13 +60,9 @@ pub struct HttpProvider {
 
 impl HttpProvider {
     pub fn new(config: HttpConfig) -> Result<Self, ConfigError> {
-        let base_url = config.base_url.trim_end_matches('/');
-        let url = reqwest::Url::parse(&format!("{base_url}/chat/completions"))
-            .ok()
-            .filter(|url| matches!(url.scheme(), "http" | "https"))
-            .ok_or_else(|| ConfigError::BaseUrl {
-                url: config.base_url.clone(),
-            })?;
+        let url = chat_url(&config.base_url).ok_or_else(|| ConfigError::BaseUrl {
+            url: config.base_url.clone(),
+        })?;
         if let Some(name) = RESERVED_PARAMS
             .iter()
             .find(|name| config.params.contains_key(**name))
@@ -134,6 +127,15 @@ impl Provider for HttpProvider {
         }
         parse_reply(&body)
     }
+}
+
+/// Where chat completions go under `base_url`; `None` unless it is an
+/// http or https URL.
+pub(crate) fn chat_url(base_url: &str) -> Option<reqwest::Url> {
+    let base_url = base_url.trim_end_matches('/');
+    reqwest::Url::parse(&format!("{base_url}/chat/completions"))
+        .ok()
+        .filter(|url| matches!(url.scheme(), "http" | "https"))
 }
 
 /// Reads the body up to `cap` bytes; the flag says there was more.
@@ -217,7 +219,7 @@ fn parse_reply(body: &[u8]) -> Result<Reply, ProviderError> {
     let cost_nano_usd = match &usage.cost {
         None => None,
         Some(cost) => Some(
-            nano_usd(cost.get())
+            money::nano_usd(cost.get())
                 .ok_or_else(|| malformed(format!("usage.cost is not a cost: {cost}")))?,
         ),
     };
@@ -247,49 +249,6 @@ fn parse_reply(body: &[u8]) -> Result<Reply, ProviderError> {
         provider: wire.provider,
         finish_reason: choice.finish_reason,
     })
-}
-
-/// A JSON number of US dollars as nano-dollars, read from its decimal
-/// digits as written, never through a float. Rounded to the nearest
-/// nano-dollar, halves up. `None` for anything but a non-negative
-/// number that fits u64 nano-dollars.
-fn nano_usd(literal: &str) -> Option<u64> {
-    let (mantissa, exponent) = match literal.find(['e', 'E']) {
-        Some(at) => (&literal[..at], literal[at + 1..].parse::<i32>().ok()?),
-        None => (literal, 0),
-    };
-    let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
-    if whole.is_empty()
-        || !whole
-            .bytes()
-            .chain(fraction.bytes())
-            .all(|byte| byte.is_ascii_digit())
-    {
-        return None;
-    }
-    let digits = format!("{whole}{fraction}");
-    let digits = digits.trim_start_matches('0');
-    if digits.is_empty() {
-        return Some(0);
-    }
-    if digits.len() > COST_DIGITS_MAX {
-        return None;
-    }
-    let value: u128 = digits.parse().expect("at most 30 ASCII digits fit u128");
-    // value × 10^(exponent − fraction digits) dollars, and a dollar is
-    // 10^9 nano-dollars.
-    let fraction_digits = i64::try_from(fraction.len()).ok()?;
-    let shift = i64::from(exponent) + 9 - fraction_digits;
-    let nano = if shift >= 0 {
-        value.checked_mul(10u128.checked_pow(u32::try_from(shift).ok()?)?)?
-    } else {
-        match 10u128.checked_pow(u32::try_from(-shift).ok()?) {
-            Some(divisor) => (value + divisor / 2) / divisor,
-            // A divisor past u128 is more than twice any value.
-            None => 0,
-        }
-    };
-    u64::try_from(nano).ok()
 }
 
 // The wire format. Field names are the API's.

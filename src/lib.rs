@@ -9,6 +9,8 @@
 pub mod clock;
 pub mod conversation;
 pub mod events;
+pub mod money;
+pub mod profile;
 pub mod provider;
 pub mod run;
 pub mod tools;
