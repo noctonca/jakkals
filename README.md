@@ -75,6 +75,11 @@ model was sent and wrote, in `~/.local/share/jakkals/transcripts/`
 (or give it a file path), and `--transcript-reasoning` to include its
 reasoning text.
 
+To check a profile before running it, without calling a model,
+`jakkals check --profile openrouter.local.toml` validates the file
+and the sandbox; add `--connect` to also read its keys and set up
+its MCP servers, printing what each one offers.
+
 ## The reference
 
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) is the design, and the
@@ -83,7 +88,7 @@ reference for:
 - [the profile's fields](docs/ARCHITECTURE.md#the-profile), with their defaults;
 - [the events](docs/ARCHITECTURE.md#events), field by field;
 - [the transcript](docs/ARCHITECTURE.md#the-transcript);
-- [the exit statuses](docs/ARCHITECTURE.md#exit-status);
+- [the exit statuses](docs/ARCHITECTURE.md#exit-status), and [checking a profile](docs/ARCHITECTURE.md#checking-a-profile);
 - [the local tools](docs/ARCHITECTURE.md#the-local-tools), [the shell and its sandboxes](docs/ARCHITECTURE.md#the-shell-tool), and [MCP servers](docs/ARCHITECTURE.md#mcp-servers).
 
 To work on Jakkals, read [AGENTS.md](AGENTS.md): it is for people and
