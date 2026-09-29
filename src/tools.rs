@@ -6,12 +6,16 @@ use serde::Serialize;
 use crate::conversation::{ToolCall, ToolSpec};
 
 pub mod local;
+pub mod shell;
 
 // See the note on `Provider`: generic only, no `Send` needed.
 #[allow(async_fn_in_trait)]
 pub trait Tools {
     /// The tools offered to the model, in a fixed order.
     fn specs(&self) -> &[ToolSpec];
+
+    /// How shell commands are confined, when a shell is offered.
+    fn sandbox(&self) -> Option<shell::Sandbox>;
 
     /// Runs one call to a tool named in `specs`, returning within
     /// `deadline_ms`. Every failure is an outcome, not an error: it goes
@@ -52,4 +56,21 @@ pub enum ToolStatus {
     Ok,
     Failed,
     Refused,
+}
+
+/// Why a call ended without a result, as the model will read it: the
+/// failing half of a tool's `Result`, turned into a [`ToolOutcome`].
+pub(crate) enum Stop {
+    Failed(String),
+    Refused(String),
+}
+
+impl From<Result<String, Stop>> for ToolOutcome {
+    fn from(result: Result<String, Stop>) -> Self {
+        match result {
+            Ok(text) => ToolOutcome::Ok(text),
+            Err(Stop::Failed(text)) => ToolOutcome::Failed(text),
+            Err(Stop::Refused(text)) => ToolOutcome::Refused(text),
+        }
+    }
 }

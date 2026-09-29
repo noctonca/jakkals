@@ -36,6 +36,7 @@ fn minimal_profile_takes_the_documented_defaults() {
                 params: Map::new(),
             },
             local_tools: Vec::new(),
+            shell: None,
             // `shasum -a 256` of the same bytes.
             hash: "sha256:0ecfa70ca44c48c52c8b8636f358d73c955fb22d383c103433c2bdc5488a91cd"
                 .to_owned(),
@@ -68,7 +69,11 @@ max_tokens = 1000
 reasoning = { effort = "low" }
 
 [tools]
-local = ["search", "read", "list"]
+local = ["search", "shell", "read", "list"]
+shell_allow = ["git log", "rg", "'cargo' tree"]
+sandbox = "seatbelt"
+sandbox_read = ["/opt/homebrew"]
+shell_timeout_s = 10
 "#;
     let profile = Profile::parse(text).expect("the profile is valid");
 
@@ -97,8 +102,26 @@ local = ["search", "read", "list"]
     );
     assert_eq!(
         profile.local_tools,
-        [LocalTool::Read, LocalTool::List, LocalTool::Search],
+        [
+            LocalTool::Read,
+            LocalTool::List,
+            LocalTool::Search,
+            LocalTool::Shell
+        ],
         "offered in a fixed order, whatever the order written"
+    );
+    assert_eq!(
+        profile.shell,
+        Some(ShellSettings {
+            allow: vec![
+                vec!["git".to_owned(), "log".to_owned()],
+                vec!["rg".to_owned()],
+                vec!["cargo".to_owned(), "tree".to_owned()],
+            ],
+            sandbox: Sandbox::Seatbelt,
+            sandbox_read: vec!["/opt/homebrew".into()],
+            timeout_s: 10,
+        })
     );
 }
 
@@ -206,27 +229,91 @@ fn values_the_harness_cant_run_with_are_refused() {
 
 #[test]
 fn capabilities_not_built_are_refused_not_ignored() {
+    let text = format!("{MINIMAL}[mcp.memory]\nurl = \"https://example.com/mcp\"\n");
+    assert_eq!(invalid(&text), ProfileError::NotBuilt { field: "mcp" });
+}
+
+#[test]
+fn the_shell_takes_the_documented_defaults() {
+    let text = format!("{MINIMAL}[tools]\nlocal = [\"shell\"]\nshell_allow = [\"git log\"]\n");
+    let profile = Profile::parse(&text).expect("the profile is valid");
+    assert_eq!(
+        profile.shell,
+        Some(ShellSettings {
+            allow: vec![vec!["git".to_owned(), "log".to_owned()]],
+            sandbox: Sandbox::Seatbelt,
+            sandbox_read: Vec::new(),
+            timeout_s: 30,
+        })
+    );
+}
+
+#[test]
+fn shell_settings_the_harness_cant_run_with_are_refused() {
+    let shell = |extra: &str| {
+        format!("{MINIMAL}[tools]\nlocal = [\"shell\"]\nshell_allow = [\"git log\"]\n{extra}\n")
+    };
+    let without_shell = |extra: &str| format!("{MINIMAL}[tools]\nlocal = [\"read\"]\n{extra}\n");
     let cases = [
         (
-            format!("{MINIMAL}[tools]\nlocal = [\"read\", \"shell\"]\n"),
-            "tools.local \"shell\"",
-        ),
-        (
-            format!("{MINIMAL}[tools]\nshell_allow = [\"git log\"]\n"),
+            format!("{MINIMAL}[tools]\nlocal = [\"shell\"]\n"),
             "tools.shell_allow",
         ),
         (
-            format!("{MINIMAL}[tools]\nsandbox = \"none\"\n"),
-            "tools.sandbox",
+            format!("{MINIMAL}[tools]\nlocal = [\"shell\"]\nshell_allow = []\n"),
+            "tools.shell_allow",
         ),
         (
-            format!("{MINIMAL}[mcp.memory]\nurl = \"https://example.com/mcp\"\n"),
-            "mcp",
+            format!("{MINIMAL}[tools]\nlocal = [\"shell\"]\nshell_allow = [\"git log | head\"]\n"),
+            "tools.shell_allow",
+        ),
+        (
+            format!("{MINIMAL}[tools]\nlocal = [\"shell\"]\nshell_allow = [\"  \"]\n"),
+            "tools.shell_allow",
+        ),
+        (
+            format!("{MINIMAL}[tools]\nlocal = [\"shell\"]\nshell_allow = [\"git 'log\"]\n"),
+            "tools.shell_allow",
+        ),
+        (shell("shell_timeout_s = 0"), "tools.shell_timeout_s"),
+        (
+            shell("sandbox_read = [\"opt/homebrew\"]"),
+            "tools.sandbox_read",
+        ),
+        (
+            shell("sandbox_read = [\"/opt/../etc\"]"),
+            "tools.sandbox_read",
+        ),
+        (
+            shell("sandbox = \"none\"\nsandbox_read = [\"/opt/homebrew\"]"),
+            "tools.sandbox_read",
+        ),
+        (
+            without_shell("shell_allow = [\"git log\"]"),
+            "tools.shell_allow",
+        ),
+        (without_shell("sandbox = \"none\""), "tools.sandbox"),
+        (
+            without_shell("sandbox_read = [\"/opt\"]"),
+            "tools.sandbox_read",
+        ),
+        (
+            without_shell("shell_timeout_s = 5"),
+            "tools.shell_timeout_s",
         ),
     ];
     for (text, field) in cases {
-        assert_eq!(invalid(&text), ProfileError::NotBuilt { field });
+        let error = invalid(&text);
+        assert!(
+            matches!(error, ProfileError::Invalid { field: named, .. } if named == field),
+            "{text:?}: invalid {field}, not {error:?}"
+        );
     }
+    let error = invalid(&shell("sandbox = \"landlock\""));
+    assert!(
+        matches!(&error, ProfileError::Toml { detail } if detail.contains("unknown variant `landlock`")),
+        "{error:?}"
+    );
 }
 
 #[test]

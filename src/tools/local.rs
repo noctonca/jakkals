@@ -1,8 +1,10 @@
-//! The local tools: `read`, `list` and `search`, each confined to the
-//! run's working directory. See "The local tools" in
-//! docs/ARCHITECTURE.md for what each does, refuses and is bounded by.
+//! The local tools: `read`, `list`, `search` and `shell`, each confined
+//! to the run's working directory. See "The local tools" in
+//! docs/ARCHITECTURE.md for what each does, refuses and is bounded by;
+//! the shell is in [`super::shell`].
 
-use std::fmt::Write as _;
+use std::ffi::OsString;
+use std::fmt::{self, Write as _};
 use std::fs::File;
 use std::io::Read as _;
 use std::path::{Component, Path, PathBuf};
@@ -17,7 +19,8 @@ use serde::de::DeserializeOwned;
 use serde_json::json;
 
 use crate::conversation::{ToolCall, ToolSpec};
-use crate::tools::{ToolOutcome, Tools};
+use crate::tools::shell::{Sandbox, Shell, ShellSettings, ShellSetupError};
+use crate::tools::{Stop, ToolOutcome, Tools};
 
 /// `read`'s largest file: 1 MiB. A choice: 32 times the default
 /// `limits.tool_output_bytes`, room for any hand-written source file.
@@ -41,12 +44,15 @@ const SEARCH_LINE_SHOWN_BYTES: usize = 500;
 /// hand-written line.
 const SEARCH_LINE_CAP_BYTES: usize = 1024 * 1024;
 
-/// A local tool a profile can offer. Ordered as the tools are offered.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+/// A local tool a profile can offer, named as the profile writes it.
+/// Ordered as the tools are offered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LocalTool {
     Read,
     List,
     Search,
+    Shell,
 }
 
 impl LocalTool {
@@ -55,12 +61,14 @@ impl LocalTool {
             LocalTool::Read => "read",
             LocalTool::List => "list",
             LocalTool::Search => "search",
+            LocalTool::Shell => "shell",
         }
     }
 
     // The descriptions are part of the prompt: short, and saying only
-    // what the model needs to call the tool well.
-    fn spec(self) -> ToolSpec {
+    // what the model needs to call the tool well. The shell's names its
+    // allowlist, so it is the shell's own.
+    fn spec(self, shell: Option<&Shell>) -> ToolSpec {
         let path = json!({
             "type": "string",
             "description": "Relative to the working directory."
@@ -106,6 +114,7 @@ impl LocalTool {
                     "additionalProperties": false
                 }),
             ),
+            LocalTool::Shell => return shell.expect("the shell is set up").spec(),
         };
         ToolSpec {
             name: self.name().to_owned(),
@@ -121,20 +130,63 @@ pub struct LocalTools {
     root: PathBuf,
     offered: Vec<LocalTool>,
     specs: Vec<ToolSpec>,
+    /// Set up when `shell` is offered.
+    shell: Option<Shell>,
 }
 
+/// Why the local tools can't be set up for a run.
+#[derive(Debug)]
+pub enum ToolsSetupError {
+    /// `--cwd` can't be resolved.
+    WorkingDirectory(std::io::Error),
+    Shell(ShellSetupError),
+}
+
+impl fmt::Display for ToolsSetupError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::WorkingDirectory(error) => write!(formatter, "--cwd: {error}"),
+            Self::Shell(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for ToolsSetupError {}
+
 impl LocalTools {
-    /// `offered` is in order, each tool once, as the profile gives it.
-    pub fn new(cwd: &Path, offered: &[LocalTool]) -> std::io::Result<Self> {
+    /// `offered` is in order, each tool once, as the profile gives it,
+    /// with the shell's settings exactly when `shell` is offered.
+    /// `path_env` is the `PATH` shell commands get.
+    pub fn new(
+        cwd: &Path,
+        offered: &[LocalTool],
+        shell: Option<&ShellSettings>,
+        path_env: Option<OsString>,
+    ) -> Result<Self, ToolsSetupError> {
         assert!(
             offered.windows(2).all(|pair| pair[0] < pair[1]),
             "the profile offers each tool once, in order"
         );
-        let root = cwd.canonicalize()?;
+        assert_eq!(
+            offered.contains(&LocalTool::Shell),
+            shell.is_some(),
+            "the profile gives the shell's settings exactly when it offers the shell"
+        );
+        let root = cwd
+            .canonicalize()
+            .map_err(ToolsSetupError::WorkingDirectory)?;
+        let shell = shell
+            .map(|settings| Shell::new(&root, settings, path_env))
+            .transpose()
+            .map_err(ToolsSetupError::Shell)?;
         Ok(Self {
+            specs: offered
+                .iter()
+                .map(|tool| tool.spec(shell.as_ref()))
+                .collect(),
             root,
             offered: offered.to_vec(),
-            specs: offered.iter().map(|tool| tool.spec()).collect(),
+            shell,
         })
     }
 
@@ -361,6 +413,10 @@ impl Tools for LocalTools {
         &self.specs
     }
 
+    fn sandbox(&self) -> Option<Sandbox> {
+        self.shell.as_ref().map(Shell::sandbox)
+    }
+
     async fn call(&mut self, call: &ToolCall, deadline_ms: u64) -> ToolOutcome {
         let deadline = Instant::now() + Duration::from_millis(deadline_ms);
         let tool = self
@@ -377,19 +433,15 @@ impl Tools for LocalTools {
             LocalTool::Search => {
                 arguments(&call.arguments).and_then(|parsed| self.search(parsed, deadline))
             }
+            LocalTool::Shell => arguments(&call.arguments).and_then(|parsed| {
+                self.shell
+                    .as_ref()
+                    .expect("the shell is set up")
+                    .call(parsed, deadline)
+            }),
         };
-        match result {
-            Ok(text) => ToolOutcome::Ok(text),
-            Err(Stop::Failed(text)) => ToolOutcome::Failed(text),
-            Err(Stop::Refused(text)) => ToolOutcome::Refused(text),
-        }
+        result.into()
     }
-}
-
-/// Why a call ended without a result, as the model will read it.
-enum Stop {
-    Failed(String),
-    Refused(String),
 }
 
 #[derive(Deserialize)]

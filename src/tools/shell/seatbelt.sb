@@ -1,0 +1,37 @@
+; The sandbox for the shell tool's commands on macOS, run through
+; sandbox-exec. See "The shell tool" in docs/ARCHITECTURE.md. Jakkals
+; passes the working directory as the parameter CWD and appends one
+; rule for each path in tools.sandbox_read.
+(version 1)
+(deny default)
+
+; A command may start programs; the reads below confine which.
+(allow process-exec process-fork)
+(allow signal (target same-sandbox))
+(allow sysctl-read)
+
+; Metadata (size and times, not content) anywhere: programs resolve
+; paths through their parents.
+(allow file-read-metadata)
+
+; What a program needs to start, and the working directory.
+(allow file-read*
+  (literal "/")
+  (subpath "/bin")
+  (subpath "/sbin")
+  (subpath "/usr")
+  (subpath "/System")
+  (subpath "/Library/Apple")
+  (subpath "/private/var/db/dyld")
+  (subpath "/private/var/db/timezone")
+  (literal "/private/etc/localtime")
+  (literal "/dev/null")
+  (literal "/dev/random")
+  (literal "/dev/urandom")
+  (subpath (param "CWD")))
+
+; Where package managers install: never a system path. A later rule
+; wins, so this takes it back from /usr above.
+(deny file-read* (subpath "/usr/local"))
+
+(allow file-write-data (literal "/dev/null"))

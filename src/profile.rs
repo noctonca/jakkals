@@ -15,6 +15,7 @@ use crate::money;
 use crate::provider::http::{self, HttpConfig, OPENROUTER_BASE_URL};
 use crate::run::Limits;
 use crate::tools::local::LocalTool;
+use crate::tools::shell::{self, SHELL_TIMEOUT_S_DEFAULT, Sandbox, ShellSettings, WordsError};
 
 /// The largest profile read. A profile is a page of TOML and a system
 /// prompt; a file past this is not a profile.
@@ -33,6 +34,8 @@ pub struct Profile {
     pub provider: ProviderSettings,
     /// The local tools offered, in the order they are offered, each once.
     pub local_tools: Vec<LocalTool>,
+    /// The shell's settings, exactly when `shell` is offered.
+    pub shell: Option<ShellSettings>,
     /// `sha256:` and the hex digest of the file's bytes, so a run can be
     /// matched to its profile with standard tools.
     pub hash: String,
@@ -116,12 +119,14 @@ impl Profile {
         }
         let limits = limits(&file.limits, text)?;
         let provider = provider(file.provider)?;
-        let local_tools = local_tools(file.tools)?;
+        let local_tools = local_tools(&file.tools.local)?;
+        let shell = shell_settings(file.tools, local_tools.contains(&LocalTool::Shell))?;
         Ok(Self {
             system_prompt: file.system_prompt,
             limits,
             provider,
             local_tools,
+            shell,
             hash: hash(text.as_bytes()),
         })
     }
@@ -236,41 +241,100 @@ fn provider(file: FileProvider) -> Result<ProviderSettings, ProfileError> {
     })
 }
 
-fn local_tools(file: FileTools) -> Result<Vec<LocalTool>, ProfileError> {
-    if file.shell_allow.is_some() {
-        return Err(ProfileError::NotBuilt {
-            field: "tools.shell_allow",
-        });
-    }
-    if file.sandbox.is_some() {
-        return Err(ProfileError::NotBuilt {
-            field: "tools.sandbox",
-        });
-    }
-    let mut tools = Vec::with_capacity(file.local.len());
-    for name in file.local {
-        let tool = match name {
-            FileLocalTool::Read => LocalTool::Read,
-            FileLocalTool::List => LocalTool::List,
-            FileLocalTool::Search => LocalTool::Search,
-            FileLocalTool::Shell => {
-                return Err(ProfileError::NotBuilt {
-                    field: "tools.local \"shell\"",
-                });
-            }
-        };
-        if tools.contains(&tool) {
+fn local_tools(names: &[LocalTool]) -> Result<Vec<LocalTool>, ProfileError> {
+    let mut tools = Vec::with_capacity(names.len());
+    for tool in names {
+        if tools.contains(tool) {
             return Err(ProfileError::Invalid {
                 field: "tools.local",
                 problem: "names a tool twice",
             });
         }
-        tools.push(tool);
+        tools.push(*tool);
     }
     // Offered in a fixed order, so the order written doesn't change the
     // prompt.
     tools.sort();
     Ok(tools)
+}
+
+fn shell_settings(file: FileTools, offered: bool) -> Result<Option<ShellSettings>, ProfileError> {
+    if !offered {
+        let set = [
+            ("tools.shell_allow", file.shell_allow.is_some()),
+            ("tools.sandbox", file.sandbox.is_some()),
+            ("tools.sandbox_read", file.sandbox_read.is_some()),
+            ("tools.shell_timeout_s", file.shell_timeout_s.is_some()),
+        ];
+        if let Some((field, _)) = set.iter().find(|(_, set)| *set) {
+            return Err(ProfileError::Invalid {
+                field,
+                problem: "is set, but `shell` isn't in tools.local",
+            });
+        }
+        return Ok(None);
+    }
+
+    let entries = file.shell_allow.unwrap_or_default();
+    if entries.is_empty() {
+        return Err(ProfileError::Invalid {
+            field: "tools.shell_allow",
+            problem: "must name at least one command when `shell` is offered",
+        });
+    }
+    let mut allow = Vec::with_capacity(entries.len());
+    for entry in &entries {
+        let words = shell::words(entry).map_err(|error| ProfileError::Invalid {
+            field: "tools.shell_allow",
+            problem: match error {
+                WordsError::ShellCharacter(_) => {
+                    "has an entry holding a character only a shell reads (| & ; < > ` $ * ? [ or a line break)"
+                }
+                WordsError::Unsplittable => "has an entry whose quotes don't close",
+                WordsError::Empty => "has an empty entry",
+            },
+        })?;
+        allow.push(words);
+    }
+
+    let sandbox = file.sandbox.unwrap_or(Sandbox::Seatbelt);
+    let sandbox_read: Vec<std::path::PathBuf> = file
+        .sandbox_read
+        .unwrap_or_default()
+        .into_iter()
+        .map(std::path::PathBuf::from)
+        .collect();
+    if sandbox == Sandbox::None && !sandbox_read.is_empty() {
+        return Err(ProfileError::Invalid {
+            field: "tools.sandbox_read",
+            problem: "is set, but tools.sandbox is `none`",
+        });
+    }
+    if sandbox_read.iter().any(|path| {
+        !path.is_absolute()
+            || path
+                .components()
+                .any(|component| component == std::path::Component::ParentDir)
+    }) {
+        return Err(ProfileError::Invalid {
+            field: "tools.sandbox_read",
+            problem: "must hold absolute paths without `..`",
+        });
+    }
+
+    let timeout_s = file.shell_timeout_s.unwrap_or(SHELL_TIMEOUT_S_DEFAULT);
+    if timeout_s == 0 {
+        return Err(ProfileError::Invalid {
+            field: "tools.shell_timeout_s",
+            problem: "must be positive",
+        });
+    }
+    Ok(Some(ShellSettings {
+        allow,
+        sandbox,
+        sandbox_read,
+        timeout_s,
+    }))
 }
 
 fn hash(bytes: &[u8]) -> String {
@@ -302,19 +366,11 @@ struct File {
 #[serde(deny_unknown_fields)]
 struct FileTools {
     #[serde(default)]
-    local: Vec<FileLocalTool>,
-    shell_allow: Option<toml::Value>,
-    sandbox: Option<toml::Value>,
-}
-
-/// A local tool's name as written; `shell` is known but not built.
-#[derive(Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum FileLocalTool {
-    Read,
-    List,
-    Search,
-    Shell,
+    local: Vec<LocalTool>,
+    shell_allow: Option<Vec<String>>,
+    sandbox: Option<Sandbox>,
+    sandbox_read: Option<Vec<String>>,
+    shell_timeout_s: Option<u32>,
 }
 
 #[derive(Deserialize)]

@@ -80,8 +80,13 @@ async fn start(profile: &Path, model: &str, cwd: &Path, prompt: &str) -> Result<
     if !cwd.is_dir() {
         return Err(format!("--cwd {} is not a directory", cwd.display()));
     }
-    let mut tools = LocalTools::new(cwd, &profile.local_tools)
-        .map_err(|error| format!("--cwd {}: {error}", cwd.display()))?;
+    let mut tools = LocalTools::new(
+        cwd,
+        &profile.local_tools,
+        profile.shell.as_ref(),
+        std::env::var_os("PATH"),
+    )
+    .map_err(|error| error.to_string())?;
     let config = profile
         .http_config(|variable| std::env::var(variable).ok())
         .map_err(|error| error.to_string())?;
