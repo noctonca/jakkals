@@ -30,6 +30,8 @@ pub enum Event {
         /// The shell's sandbox; `None` when no shell is offered.
         sandbox: Option<Sandbox>,
         limits: Limits,
+        /// The transcript file's absolute path; `None` when there is none.
+        transcript: Option<String>,
     },
     /// One per MCP server, after `start`: what the server said of itself
     /// and each of its tools as the model sees it, since the server, not

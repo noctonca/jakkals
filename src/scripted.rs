@@ -162,6 +162,7 @@ pub fn reply(prompt_tokens: u32, completion_tokens: u32, cost_nano_usd: Option<u
     Reply {
         text: None,
         tool_calls: Vec::new(),
+        reasoning: None,
         usage: Usage {
             prompt_tokens,
             completion_tokens,

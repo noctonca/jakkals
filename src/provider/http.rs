@@ -252,6 +252,7 @@ fn parse_reply(body: &[u8]) -> Result<Reply, ProviderError> {
     Ok(Reply {
         text: message.content,
         tool_calls,
+        reasoning: message.reasoning.or(message.reasoning_content),
         usage: Usage {
             prompt_tokens: usage.prompt_tokens,
             completion_tokens: usage.completion_tokens,
@@ -384,6 +385,10 @@ struct WireChoice {
 struct WireReplyMessage {
     content: Option<String>,
     tool_calls: Option<Vec<WireReplyToolCall>>,
+    /// A reasoning model's thinking, as OpenRouter names it.
+    reasoning: Option<String>,
+    /// The same, as llama.cpp and LM Studio name it.
+    reasoning_content: Option<String>,
 }
 
 #[derive(Deserialize)]

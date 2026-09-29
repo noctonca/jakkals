@@ -363,6 +363,7 @@ fn the_loop_hands_a_read_back_to_the_model() {
     use crate::events::Outcome;
     use crate::run::{Limits, Task, run};
     use crate::scripted::{KeptSink, ScriptedProvider, VirtualClock, answer, reply};
+    use crate::transcript::NoTranscript;
 
     let dir = TempDir::new("loop");
     dir.write("box.txt", "a cat\n");
@@ -382,6 +383,7 @@ fn the_loop_hands_a_read_back_to_the_model() {
         prompt: "What is in the box?",
         model: "test/model",
         profile_hash: "hash",
+        transcript: None,
     };
     let limits = Limits {
         steps: 5,
@@ -399,6 +401,7 @@ fn the_loop_hands_a_read_back_to_the_model() {
         &mut tools,
         &clock,
         &mut KeptSink::default(),
+        &mut NoTranscript,
     ));
 
     assert_eq!(outcome, Outcome::Done);

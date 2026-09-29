@@ -24,7 +24,7 @@ pub enum Message {
 }
 
 /// A tool call as the model wrote it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ToolCall {
     /// The provider's id for the call, echoed back with the result.
     pub id: String,

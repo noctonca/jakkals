@@ -59,7 +59,11 @@ cargo run -- run --profile openrouter.local.toml --model <provider/model> \
 ```
 
 The events go to stdout as JSON lines and the exit status says how the
-run ended; both are described in the architecture.
+run ended; both are described in the architecture. The events carry
+no conversation text beyond the answer: add `--transcript` to record
+every message the model was sent and wrote, in
+`~/.local/share/jakkals/transcripts/` (or give it a file path), and
+`--transcript-reasoning` to include its reasoning text.
 
 ## Licence
 

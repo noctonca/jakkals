@@ -3,6 +3,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::{Parser, Subcommand};
 
@@ -14,12 +15,14 @@ use jakkals::run::{Task, run};
 use jakkals::tools::Toolbox;
 use jakkals::tools::local::LocalTools;
 use jakkals::tools::mcp::McpServer;
+use jakkals::transcript::{self, JsonLinesTranscript};
 
 /// The process's exit status, one per way a run can end, so a caller
 /// can branch without reading the events. Documented in ARCHITECTURE.md.
 const EXIT_DONE: u8 = 0;
-/// The run never started: a bad profile, key or directory, or an MCP
-/// server that couldn't be set up. clap uses the same status for bad
+/// The run never started: a bad profile, key or directory, a transcript
+/// file that couldn't be created, or an MCP server that couldn't be set
+/// up. clap uses the same status for bad
 /// arguments. No events are written.
 const EXIT_SETUP: u8 = 2;
 const EXIT_LIMIT: u8 = 3;
@@ -48,7 +51,23 @@ enum Command {
         /// The task.
         #[arg(long)]
         prompt: String,
+        /// Also write the conversation to a new file (mode 600), one JSON
+        /// line per message. It holds everything the model saw. Without a
+        /// path, it goes in $XDG_DATA_HOME/jakkals/transcripts (default
+        /// ~/.local/share/jakkals/transcripts), named for the start time.
+        #[arg(long, value_name = "PATH")]
+        transcript: Option<Option<PathBuf>>,
+        /// Include each reply's reasoning text in the transcript.
+        #[arg(long, requires = "transcript")]
+        transcript_reasoning: bool,
     },
+}
+
+/// A transcript the run was asked for.
+struct TranscriptRequest<'a> {
+    /// `None` for the default folder and a generated name.
+    path: Option<&'a Path>,
+    reasoning: bool,
 }
 
 // One thread: the loop is sequential, and nothing it awaits needs a
@@ -62,23 +81,37 @@ async fn main() -> ExitCode {
             model,
             cwd,
             prompt,
-        } => match start(&profile, &model, &cwd, &prompt).await {
-            Ok(outcome) => ExitCode::from(match outcome {
-                Outcome::Done => EXIT_DONE,
-                Outcome::Limit { .. } => EXIT_LIMIT,
-                Outcome::Error { .. } => EXIT_ERROR,
-            }),
-            Err(message) => {
-                eprintln!("jakkals: {message}");
-                ExitCode::from(EXIT_SETUP)
+            transcript,
+            transcript_reasoning,
+        } => {
+            let transcript = transcript.as_ref().map(|path| TranscriptRequest {
+                path: path.as_deref(),
+                reasoning: transcript_reasoning,
+            });
+            match start(&profile, &model, &cwd, &prompt, transcript).await {
+                Ok(outcome) => ExitCode::from(match outcome {
+                    Outcome::Done => EXIT_DONE,
+                    Outcome::Limit { .. } => EXIT_LIMIT,
+                    Outcome::Error { .. } => EXIT_ERROR,
+                }),
+                Err(message) => {
+                    eprintln!("jakkals: {message}");
+                    ExitCode::from(EXIT_SETUP)
+                }
             }
-        },
+        }
     }
 }
 
 /// Everything a run needs is checked before its first event, so a run
 /// that starts has only the loop's ways to end.
-async fn start(profile: &Path, model: &str, cwd: &Path, prompt: &str) -> Result<Outcome, String> {
+async fn start(
+    profile: &Path,
+    model: &str,
+    cwd: &Path,
+    prompt: &str,
+    transcript: Option<TranscriptRequest<'_>>,
+) -> Result<Outcome, String> {
     let profile = Profile::read(profile).map_err(|error| error.to_string())?;
     if !cwd.is_dir() {
         return Err(format!("--cwd {} is not a directory", cwd.display()));
@@ -112,12 +145,27 @@ async fn start(profile: &Path, model: &str, cwd: &Path, prompt: &str) -> Result<
         );
     }
     let mut tools = Toolbox::new(local, servers);
+    // Created last, so a run that fails setup leaves no empty file whose
+    // path the next attempt would be refused.
+    let (mut transcript, transcript_path) = match transcript {
+        None => (None, None),
+        Some(request) => {
+            let path = transcript_path(request.path)?;
+            let file = transcript::create(&path)
+                .map_err(|error| format!("--transcript {}: {error}", path.display()))?;
+            (
+                Some(JsonLinesTranscript::new(file, request.reasoning)),
+                Some(path.to_string_lossy().into_owned()),
+            )
+        }
+    };
 
     let task = Task {
         system_prompt: &profile.system_prompt,
         prompt,
         model,
         profile_hash: &profile.hash,
+        transcript: transcript_path.as_deref(),
     };
     let mut sink = JsonLines::new(std::io::stdout().lock());
     Ok(run(
@@ -127,8 +175,28 @@ async fn start(profile: &Path, model: &str, cwd: &Path, prompt: &str) -> Result<
         &mut tools,
         &MonotonicClock::start(),
         &mut sink,
+        &mut transcript,
     )
     .await)
+}
+
+/// The transcript's absolute path: the one given, or a new name in the
+/// default folder, which is made if missing.
+fn transcript_path(given: Option<&Path>) -> Result<PathBuf, String> {
+    if let Some(path) = given {
+        return std::path::absolute(path)
+            .map_err(|error| format!("--transcript {}: {error}", path.display()));
+    }
+    let folder =
+        transcript::default_folder(std::env::var_os("XDG_DATA_HOME"), std::env::var_os("HOME"))
+            .ok_or("--transcript: neither XDG_DATA_HOME nor HOME is an absolute path")?;
+    transcript::create_folder(&folder)
+        .map_err(|error| format!("--transcript {}: {error}", folder.display()))?;
+    let unix_s = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("the clock is after 1970")
+        .as_secs();
+    Ok(folder.join(transcript::file_name(unix_s, std::process::id())))
 }
 
 #[cfg(test)]
