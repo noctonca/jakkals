@@ -466,21 +466,32 @@ one elsewhere: Apple's `git` needs the Command Line Tools'
 folder, `/Library/Developer/CommandLineTools`, in `tools.sandbox_read`.
 Programs using the system's `libcurl`, `cargo` among them, won't start
 without `/private/etc/ssl`, where it reads its OpenSSL configuration.
-A rustup-installed `cargo` runs read-only with its homes named and
-readable, and the repository's `Cargo.lock` committed, since it can't
-write one:
+A rustup-installed `cargo` runs read-only with its homes named, the
+parts of them it needs readable, and the repository's `Cargo.lock`
+committed, since it can't write one. Name the parts, not the whole of
+`CARGO_HOME`: it also holds `credentials.toml`, the registry token,
+which the model must not read. `/var/empty` is an empty folder macOS
+already has, so `HOME` needs no throwaway folder:
 
 ```toml
 [tools]
 local = ["shell"]
 shell_allow = ["cargo tree", "cargo metadata"]
-sandbox_read = ["/private/etc/ssl", "/path/to/.cargo", "/path/to/.rustup"]
+sandbox_read = [
+    "/private/etc/ssl",
+    "/path/to/.rustup",
+    "/path/to/.cargo/bin",
+    "/path/to/.cargo/registry",
+]
 
 [tools.shell_env]
-HOME = "/path/to/an-empty-folder"
+HOME = "/var/empty"
 CARGO_HOME = "/path/to/.cargo"
 RUSTUP_HOME = "/path/to/.rustup"
 ```
+
+`cargo tree` and `cargo metadata` then run from the registry's cached
+index, with no network, and a read of `credentials.toml` is denied.
 
 Under `landlock` they are `/bin`, `/sbin`, the `/lib` directories,
 `/usr`, the loader's cache and configuration and `/etc/localtime`, plus
