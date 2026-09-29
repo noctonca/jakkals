@@ -40,7 +40,7 @@ jakkals run --profile p.toml --model m --cwd dir --prompt "…"
    │                        │           └─ MCP servers named in the profile
    │                        ▼
    ├──────────────── events (stdout, JSON lines) ──▶ caller
-   └──────────────── transcript (--transcript file, JSON lines), when asked
+   └──────────────── transcript (a file, JSON lines), when asked
 ```
 
 The loop sends the conversation to the provider, runs the tool calls in
@@ -126,7 +126,7 @@ after it.
 
 | `type` | Carries |
 |---|---|
-| `start` | Jakkals version, profile hash, model, tool names (MCP tools' with their prefix), the shell's `sandbox` (`seatbelt`, `none`, or `null` when `shell` isn't offered), and the limits in force. |
+| `start` | Jakkals version, profile hash, model, tool names (MCP tools' with their prefix), the shell's `sandbox` (`seatbelt`, `none`, or `null` when `shell` isn't offered), the limits in force, and the `transcript` file's absolute path (`null` when none is written). |
 | `mcp_server` | One per MCP server, after `start`, in the order the tools are offered: the profile's name for it, the name and version the server reports, the protocol version agreed, how long setting it up took, and each offered tool as the model sees it: name, description, parameters. |
 | `model_request` | Step, number of messages sent. Written as the request leaves, so a slow call shows as in flight and a run killed mid-call shows which call it died in. |
 | `model_call` | The reply to a `model_request`: step, generation id, model and provider that served it, input/output/cached tokens, reasoning tokens (part of the output tokens, where reported), cost, duration, finish reason. |
@@ -144,8 +144,18 @@ The events say what happened and what it cost, but not what was said:
 a tool call's result and a reply's text (other than the answer) are
 not in them. A caller that needs to read the run, to judge whether an
 answer rests on what the model saw or to see why a run went wrong,
-asks for a transcript with `--transcript <path>`. It is off by
-default.
+asks for a transcript with `--transcript`. It is off by default.
+
+`--transcript` on its own writes the file to
+`$XDG_DATA_HOME/jakkals/transcripts/`, or
+`~/.local/share/jakkals/transcripts/` when that variable is unset or not an absolute path (as the XDG spec asks),
+on macOS as on Linux. The file is named for the time the run started,
+in UTC, and the process id, `2026-01-31T14-05-09Z-4242.jsonl`, so the
+names sort by time, stay unique, and carry no colon. A folder the
+option has to make is created readable by its owner only (mode 700).
+`--transcript <path>` writes to that path instead, for a caller that
+names its own files. Either way the `start` event carries the file's
+absolute path, so a reader of the events can find it.
 
 It is a command-line option, not a profile field, because it records
 the run without changing it: the model sees the same conversation
