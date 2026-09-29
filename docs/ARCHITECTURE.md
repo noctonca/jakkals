@@ -246,12 +246,34 @@ can branch without reading the events; the `exit` event says the rest.
 | Status | Meaning |
 |---|---|
 | 0 | `done`: the model answered. |
-| 2 | The run never started: a bad argument, profile, key variable or `--cwd`, a transcript file that couldn't be created, or an MCP server that couldn't be set up. The reason is on stderr, and no events are written. |
+| 2 | The run never started: a bad argument, profile, key variable or `--cwd`, a transcript file that couldn't be created, or an MCP server that couldn't be set up. The reason is on stderr, and no events are written. `jakkals check` uses 0 and 2 alone: see [Checking a profile](#checking-a-profile). |
 | 3 | `limit`: the `exit` event names which. |
 | 4 | `error`: the `exit` event carries the typed error. |
 
 Any other status (a panic, a kill) means the run did not end cleanly;
 its events have no `exit` line.
+
+## Checking a profile
+
+`jakkals check --profile p.toml` checks a profile without running
+anything: it reads and validates the file as `run` does, and checks
+that this system can give the shell the sandbox the profile asks for,
+with its `tools.sandbox_read` paths. It needs no key, no `--cwd`, no
+model, and calls no model.
+
+`--connect` goes on to what depends on the environment: it reads every
+key variable the profile names, as `run` does, and sets up each MCP
+server as a run would (connect, initialize, read the tool list, find
+every tool the profile lists), then writes one `mcp_server` line per
+server to stdout, the same object a run's event is, with `t_ms`
+counted from when the check started. So a caller can see each tool's
+description and parameters as a model would, before paying for a run.
+It still calls no model: whether the provider takes the key is only
+learned on a run's first call.
+
+Nothing else goes to stdout. The check exits 0 when everything passes,
+and 2, with the reason on stderr worded as `run`'s, at the first thing
+that doesn't: the same faults that would stop a run before it starts.
 
 ## Survivable failures
 
