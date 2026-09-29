@@ -15,6 +15,10 @@ discipline is [TIGERSTYLE.md](TIGERSTYLE.md). Read both before touching
   context size come from the profile, and a run records the profile's
   hash. A default that changes behaviour is a profile field with its
   value written in the docs, not a constant in the loop.
+- **Capabilities are toggles.** A new behaviour (trimming, retries,
+  a wrap-up turn) arrives as a profile field, off by default, with an
+  event each time it acts. It earns its place when a run needs it,
+  not because a feature list has it: guard against sprawl.
 - **Small enough to read.** The loop fits in one sitting. Prefer a
   plain function to a framework, and our own 80 lines to a crate whose
   surface we use 2% of.

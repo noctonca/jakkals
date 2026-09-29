@@ -49,31 +49,40 @@ event sink are traits, so tests drive the loop with canned replies.
 
 ## The profile (proposed)
 
-One TOML file; every field has a documented default, and the run's
-first event carries the profile's hash.
+One TOML file, and the run's first event carries the profile's hash.
+`limits.steps` and `limits.wall_s` are required, so every run is
+bounded by numbers written in its own profile. The other limits are
+off when unset: an unset limit is not checked. Every other field has
+a documented default.
 
 | Field | What it sets |
 |---|---|
 | `system_prompt` | The system message, verbatim. Empty is allowed. |
 | `tools.local` | Which local tools exist: `read`, `list`, `search`, `shell`. |
-| `tools.shell_allow` | The shell's allowlist, as command prefixes. |
+| `tools.shell_allow` | The shell's allowlist, as leading whole words (`git log`). See [The shell tool](#the-shell-tool). |
+| `tools.sandbox` | How shell commands are confined: `seatbelt` (macOS) by default; `none` must be written out. |
 | `mcp.<name>` | An MCP server: `url`, and the environment variable holding its key; optional tool allow or deny list. |
-| `limits.steps` | Most model calls in a run. |
-| `limits.cost_usd` | Stop once the reported cost passes this. |
-| `limits.tokens` | Stop once total tokens pass this. |
-| `limits.wall_s` | The run's deadline. |
-| `limits.tool_output_bytes` | A tool result longer than this is cut, and the cut is marked. |
+| `limits.steps` | Most model calls in a run. Required. |
+| `limits.cost_usd` | Stop once the reported cost passes this. Unset by default. See [Cost](#cost). |
+| `limits.tokens` | Stop once total tokens pass this. Unset by default. |
+| `limits.context_tokens` | Stop once a model call's prompt passes this many tokens. Unset by default. See [Context size](#context-size). |
+| `limits.wall_s` | The run's deadline. Required. |
+| `limits.tool_output_bytes` | A tool result longer than this is cut, and the cut is marked. A size cap, not a run bound, so it has a documented default. |
 | `provider.base_url` | OpenRouter by default; any compatible server. The key comes from an environment variable the profile names. |
 | `provider.params` | Temperature, max tokens and the like, passed through as given. |
 
 ## Events (proposed)
 
 One JSON object per line, each with `type` and a run-relative time.
+Each line is written and flushed when the thing it records happens, so
+a caller (or `jq` in a terminal) watches the run live rather than
+after it.
 
 | `type` | Carries |
 |---|---|
-| `start` | Jakkals version, profile hash, model, tool names. |
-| `model_call` | Step, generation id, model and provider that served it, input/output/cached tokens, cost, duration, finish reason. |
+| `start` | Jakkals version, profile hash, model, tool names, and the limits in force. |
+| `model_request` | Step, number of messages sent. Written as the request leaves, so a slow call shows as in flight and a run killed mid-call shows which call it died in. |
+| `model_call` | The reply to a `model_request`: step, generation id, model and provider that served it, input/output/cached tokens, cost, duration, finish reason. |
 | `tool_call` | Step, tool, arguments, result size, whether it was cut or refused, duration. |
 | `answer` | The final text. |
 | `exit` | Why the run ended: `done`, `limit` (which one), `refused`, `error` (typed), and the totals. |
@@ -87,6 +96,80 @@ event: a tool that fails (its error goes back to the model as the
 result); a tool call the allowlist refuses (the refusal goes back to
 the model); a limit reached (exit `limit`). Whether a provider error is
 retried, and how often, is a profile choice defaulting to no.
+
+## Context size
+
+Jakkals never shrinks the conversation: no trimming, no summarising,
+no compaction. What the model sees is every message of the run, with
+tool results cut only by `limits.tool_output_bytes`, and the cut is
+marked.
+
+A profile bounds the conversation with `limits.context_tokens`. After
+each model call, the loop compares that call's reported
+`usage.prompt_tokens` with the budget; once it is over, the run ends
+with exit `limit`, naming `context_tokens`. The count is the
+provider's own, so no tokenizer is needed and it is exact for every
+model; the price is that the run stops one step after the budget is
+passed, never before. `limits.tokens` is a different bound: it sums
+tokens over all calls and says nothing about how full the window is.
+
+When any limit ends a run, the model gets no extra turn to wrap up: a
+run that hits a limit has no answer, and that absence is the result.
+
+With the budget unset, or set above the model's window, the provider
+refuses the oversized request and the run ends in a provider error
+carrying the HTTP status and the provider's body. It is typed as a
+context overflow only if the provider says so in a structured field,
+never by matching the message.
+
+A declared trimming or compaction rule may become a profile option
+later, off by default, with an event each time it acts. It is not
+designed yet.
+
+## The shell tool
+
+There is no shell interpreter. A command is split into words (with
+shell quoting rules) and run directly, so an allowlist entry means
+what it says. A command holding a pipe, redirect, `;`, `&&`, `||`,
+`$(`, a backtick or a glob is refused, and the refusal goes back to the
+model with a `tool_call` event marked refused. The allowlist matches
+whole leading words: `git log` allows `git log --oneline`, not
+`git logfoo`. Each command runs in the working directory, with a
+minimal environment, a timeout and the output cap.
+
+Word checks can't keep a command inside the working directory:
+`cat /etc/hosts` and `git -C / log` begin with allowed words. That is
+the sandbox's job. `tools.sandbox` confines each command at the OS
+level: no writes anywhere, no reads outside the working directory and
+the system paths a program needs to start.
+
+| Sandbox | Status |
+|---|---|
+| `seatbelt` | macOS, through `sandbox-exec` and a profile kept in this repository. The default. |
+| `none` | Word checks only. Must be written out in the profile. |
+| `landlock` | Linux. Later, when a run needs Linux. |
+| `container` | Later: commands run in a throwaway container, where writes, even destructive ones, can be allowed and watched. |
+
+The sandbox is on by default, an exception to capabilities being off
+by default, because it takes power away rather than adding it. Until
+`seatbelt` lands, the word checks are the only guard, and a run's
+`start` event says so.
+
+## Cost
+
+Jakkals records the cost each reply reports (`usage.cost`) and the
+reply's generation id on every `model_call`, and the sum on `exit`. It
+makes no other calls for cost: a caller that wants the final billed
+cost looks each generation id up with the provider afterwards, once
+the figures have settled, outside the run. A reply without a cost
+records `null`, never 0: a local server's run was not measured, not
+free.
+
+`limits.cost_usd` is checked after each call against the reported
+sum, so like the context budget it stops a run one call late; the
+hard bound is the credit limit on the provider key. With the limit
+set, a reply that reports no cost ends the run with error
+`cost_unreported`, since the limit could no longer be enforced.
 
 ## The dependency register
 
@@ -102,11 +185,4 @@ Every dependency has a row here before it enters `Cargo.toml`.
 | `rmcp` | MCP client. | not yet |
 | `ignore`, `grep-searcher` | The `list` and `search` tools, with ripgrep's ignore rules. | not yet |
 | `sha2` | The profile hash. | not yet |
-
-## Open questions
-
-- Context size: what a profile may do when the conversation outgrows a
-  budget (nothing, and end the run; or a declared trimming rule).
-- The shell tool: prefix allowlist only, or also a sandbox.
-- Whether the generation id alone is enough for cost, or the run also
-  reads each generation's final cost after the fact.
+| `shlex` | Splitting a shell command into words with the shell's quoting rules, without a shell. | not yet |
